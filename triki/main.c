@@ -9,6 +9,9 @@
  * v0.0.27 (audyt 2026-08-29): WDT 8s (kick w petli glownej, fault=>reset zamiast SOS-loop),
  * BLE send = jedna proba/drop (default:break — koniec nieskonczonego retry), static_assert
  * V_CLAMP vs int16_t, TODO btn_cnt, komentarz idle_secs.
+ * v0.1.0 (plan 027 K1-K5): ring_slot_t struct, snapshot vel/flags przy poll (K2),
+ * duplikat pomija VBT (K3), seq liczy KAZDA probke — luki informacyjne (K4), VBT
+ * niezalezny od backpressure ringu (K5). Zmiana KONTRAKTU seq => bump MINOR (D-020).
  */
 #include <stdint.h>
 #include <stdbool.h>
@@ -69,13 +72,23 @@ static bool m_imu_ok = false;
 
 static ble_uuid_t m_adv_uuids[] = {{BLE_UUID_NUS_SERVICE, NUS_SERVICE_UUID_TYPE}};
 
-/* ---- ring 4 x 14B (SPSC: timer pisze, main petla czyta) ---- */
-static uint8_t          ring[RING_SLOTS][FRAME_SIZE];
-static volatile uint8_t ring_len[RING_SLOTS];
+/* ---- ring 4 x slot (SPSC: timer pisze, main petla czyta) ----
+ * K1 (plan 027): struct zamiast rownoleglych tablic; snapshot vel/flags przy poll (K2).
+ * K4: m_sample_seq liczy KAZDA probke IMU przy aktywnym polaczeniu — luki w seq sa
+ *     oczekiwane i informacyjne (drop przy pelnym ringu), patrz SPEC 5.1. */
+typedef struct {
+    uint8_t  raw[12];      /* gyro6+acc6 i16LE, z LSM OUTX_L_G */
+    uint16_t seq;
+    int16_t  vel_mms;      /* snapshot VBT w chwili poll */
+    uint8_t  flags;        /* snapshot VBT w chwili poll */
+} ring_slot_t;
+
+static ring_slot_t      ring[RING_SLOTS];
 static volatile uint8_t ring_wr = 0, ring_rd = 0;
 static volatile uint8_t  m_wire_mode = 1;    /* 1 = legacy 14B (default), 2 = v2 19B (komenda 20 11 01) */
-static uint16_t          m_seq = 0;          /* FW sample counter (zasilanie dt po stronie Triki_G) */
-static uint16_t          ring_seq[RING_SLOTS];
+static uint16_t          m_sample_seq = 0;
+static uint8_t           s_prev_raw[12] = {0};   /* K3: detekcja duplikatu (memcmp) */
+static volatile uint16_t s_dup_count = 0;        /* K3 diag: licznik duplikatow */
 static volatile bool     g_send_info = false;
 static nrf_drv_wdt_channel_id m_wdt_channel;
 
@@ -113,17 +126,26 @@ static void poll_timeout_handler(void * p_context)
     uint8_t raw[12];
     if (!lsm6dsl_read_motion(raw)) return;
 
+    uint16_t seq = m_sample_seq++;               /* K4: kazda probka, nawet dropnieta */
+
+    /* K3: duplikat (timer 9ms vs ODR 104Hz) nie wchodzi do calkowania VBT */
+    bool is_dup = (memcmp(raw, s_prev_raw, sizeof(raw)) == 0);
+    memcpy(s_prev_raw, raw, sizeof(raw));
+    if (is_dup && s_dup_count < 0xFFFF) s_dup_count++;
+
+    /* K5: VBT liczony NIEZALEZNIE od stanu ringu BLE (backpressure nie zatrzymuje calkowania) */
+    if (!is_dup) {
+        vbt_on_frame(raw);
+    }
+
     uint8_t slot = ring_wr;
     uint8_t next = (uint8_t)((slot + 1) % RING_SLOTS);
-    if (next == ring_rd) return;                 /* pelny ring -> drop najnowszej */
+    if (next == ring_rd) return;                 /* pelny ring -> drop ramki BLE; seq juz poszedl (K4) */
 
-    vbt_on_frame(raw);                           /* VBT side-band (O-012): wire bez zmian */
-
-    uint8_t frame[FRAME_SIZE] = {0x22, 0x00};
-    memcpy(&frame[2], raw, 12);
-    memcpy(ring[slot], frame, FRAME_SIZE);
-    ring_seq[slot] = m_seq++;
-    ring_len[slot] = FRAME_SIZE;
+    memcpy(ring[slot].raw, raw, sizeof(raw));
+    ring[slot].seq     = seq;
+    ring[slot].vel_mms = (int16_t)vbt_velocity_mms();   /* K2: SNAPSHOT przy poll, nie przy wysylce */
+    ring[slot].flags   = vbt_flags();                    /* K2: SNAPSHOT przy poll */
     __DMB();
     ring_wr = next;
 }
@@ -359,19 +381,23 @@ int main(void)
 
             if (m_conn_handle != BLE_CONN_HANDLE_INVALID && m_stream_on) {
                 uint8_t txbuf[FRAME_V2_SIZE];
-                const uint8_t *p_tx = ring[slot];
-                uint16_t txlen = FRAME_SIZE;
+                const uint8_t *p_tx;
+                uint16_t txlen;
                 if (m_wire_mode == 2) {
                     txbuf[0] = 0x22; txbuf[1] = 0x01;
-                    txbuf[2] = (uint8_t)(ring_seq[slot] & 0xFF);
-                    txbuf[3] = (uint8_t)(ring_seq[slot] >> 8);
-                    memcpy(&txbuf[4], &ring[slot][2], 12);
-                    int16_t vel = (int16_t)vbt_velocity_mms();
-                    txbuf[16] = (uint8_t)((uint16_t)vel & 0xFF);
-                    txbuf[17] = (uint8_t)((uint16_t)vel >> 8);
-                    txbuf[18] = vbt_flags();
+                    txbuf[2] = (uint8_t)(ring[slot].seq & 0xFF);
+                    txbuf[3] = (uint8_t)(ring[slot].seq >> 8);
+                    memcpy(&txbuf[4], ring[slot].raw, 12);
+                    txbuf[16] = (uint8_t)((uint16_t)ring[slot].vel_mms & 0xFF);
+                    txbuf[17] = (uint8_t)((uint16_t)ring[slot].vel_mms >> 8);
+                    txbuf[18] = ring[slot].flags;
                     p_tx = txbuf;
                     txlen = FRAME_V2_SIZE;
+                } else {
+                    txbuf[0] = 0x22; txbuf[1] = 0x00;
+                    memcpy(&txbuf[2], ring[slot].raw, 12);
+                    p_tx = txbuf;
+                    txlen = FRAME_SIZE;
                 }
                 /* v0.0.27 (audyt #2): JEDNA proba + drop przy kazdym bledzie (tez default).
                  * Zero retry => zero ryzyka zamrozenia petli glownej przez BLE. */
@@ -384,7 +410,7 @@ int main(void)
 #if TRIKIG_RTT_DIAG
             if (++vbt_log_div >= 104) {          /* ~1s: velocity do walidacji vs PWA */
                 vbt_log_div = 0;
-                rtt_diag_printf("VBT v=%d mm/s mv=%u", (int)vbt_velocity_mms(), (unsigned)vbt_moving());
+                rtt_diag_printf("VBT v=%d mm/s mv=%u dup=%u", (int)vbt_velocity_mms(), (unsigned)vbt_moving(), (unsigned)s_dup_count);
             }
 #endif
         }

@@ -94,6 +94,19 @@ Ramka 14B: [0x22][0x00] [gX_l gX_h gY_l gY_h gZ_l gZ_h aX_l aX_h aY_l aY_h aZ_l 
            header 2B    | gyro FIRST (6B)                  | acc (6B)                         |
            wszystkie i16 LE, raw z sensora (MSB-first w bajtach parami)
 ```
+
+### 5.1 wire v2 (0.1.0, przełączalny komendą `20 11 01`, powrót `20 11 00`)
+
+```
+Ramka 19B: [0x22][0x01] [seq_l seq_h] [gyro6] [acc6] [vel_l vel_h] [flags]
+           header 2B  | seq u16LE | gyro FIRST (6B) | acc (6B) | vel i16LE mm/s | flags u8
+           flags: bit0 moving, bit1 rest, bit2 bias-calibrated; vel+flags = snapshot VBT z chwili poll
+```
+
+**Semantyka seq (0.1.0, plan 027 K4):** licznik każdej próbki IMU przy aktywnym połączeniu —
+również dropniętej przy pełnym ringu. Luki w seq są OCZEKIWANE i informacyjne (realny drop
+przed BUFOR), nie błędem transportu. Konsument (Triki_G pushDecoded) agreguje luki jako seqGaps.
+Brak połączenia BLE = brak inkrementacji (to "nie zbieramy", nie drop).
 - Host: acc_si = n / 2048 * 9.80665 [m/s^2]; gyro_dps = n / 16.4.
 - PWA eksportuje SI — |a|~9.81 w spoczynku jest POPRAWNE (D-017 pkt 5).
 - Zmiana layoutu/skali = decyzja cross-project z koordynacja Triki_G (D-019). Wire v1 do wycofania w 1.0.0 (D-021).
