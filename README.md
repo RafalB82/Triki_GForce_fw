@@ -9,7 +9,8 @@ i komendy RX. Konsument docelowy: aplikacja **Triki_G** (Flutter, D-019/D-021).
 | Wersja | Status |
 |---|---|
 | **v19** (`trikig_triki_v19.hex`) | PRODUKCJA (end-to-end zweryfikowany: 104.0 Hz, dt 9.6 ms, skale OK) |
-| **v0.0.26** (`firmware/hex/trikig_triki_v0.0.26.hex`) | aktualny development: wire v2 (F1) + komendy RX (F2); hex sha256 `ef677b0f…` |
+| **v0.0.26** (`firmware/hex/trikig_triki_v0.0.26.hex`) | wire v2 (F1) + komendy RX (F2); sha256 `ef677b0f…` |
+| **v0.0.27** (`firmware/hex/trikig_triki_v0.0.27.hex`) | aktualny development: v0.0.26 + fixes z audytu 2026-08-29 (WDT 8s, BLE send one-shot/drop, static_assert V_CLAMP); sha256 `44eac963…` |
 
 Semver: MAJOR=0 (beta), MINOR=protokół (wire v2 → 0.1.x docelowo), PATCH=iteracja. Tag FW w RTT + komenda `20 12`.
 
