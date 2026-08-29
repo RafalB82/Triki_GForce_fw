@@ -10,7 +10,7 @@ sudo apt-get install -y gcc-arm-none-eabi
 # 2) nRF5 SDK 17.1.1 (app uzywa S112; SDK nie wchodzi do repo - licencja + rozmiar).
 SDK_DIR="${HOME}/nrf5sdk"
 if [ ! -d "$SDK_DIR" ]; then
-  echo "Pobierz nRF5 SDK 17.1.1 (nRF5_SDK_17.1.0_ddde560.zip) z nordicsemi.com"
+  echo "Pobierz nRF5 SDK 17.1.1 (nRF5_SDK_17.1.1_ddde560.zip) z nordicsemi.com"
   echo "i rozpakuj do: $SDK_DIR  (https://www.nordicsemi.com/Products/Development-software/nRF5-SDK/download)"
   exit 1
 fi
