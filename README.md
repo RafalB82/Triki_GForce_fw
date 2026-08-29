@@ -16,7 +16,7 @@ Semver: MAJOR=0 (beta), MINOR=protokół (wire v2 → 0.1.x docelowo), PATCH=ite
 
 ## Budowa od zera (odtwarzalne środowisko)
 
-1. Toolchain + SDK: `./tools/setup_env_ubuntu.sh` (arm-none-eabi GCC 13.2.1 systemowy; nRF5 SDK 17.1.0 do rozpakowania w `~/nrf5sdk` — nie wchodzi do repo).
+1. Toolchain + SDK: `./tools/setup_env_ubuntu.sh` (arm-none-eabi GCC 13.2.1 systemowy; nRF5 SDK 17.1.1 do rozpakowania w `~/nrf5sdk` — nie wchodzi do repo).
 2. Build:
    ```bash
    cd triki
