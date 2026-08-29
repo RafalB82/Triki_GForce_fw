@@ -2,7 +2,8 @@ PROJECT_NAME     := trikig_triki
 TARGETS          := nrf52810_xxaa
 OUTPUT_DIRECTORY := _build
 
-SDK_ROOT ?= $(HOME)/nrf5sdk  # override: make SDK_ROOT=/path/to/nrf5sdk
+# SDK_ROOT: override via make SDK_ROOT=/path/to/nrf5sdk
+SDK_ROOT ?= $(HOME)/nrf5sdk
 PROJ_DIR := .
 
 $(OUTPUT_DIRECTORY)/nrf52810_xxaa.out: \
