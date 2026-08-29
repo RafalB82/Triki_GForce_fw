@@ -1,0 +1,11 @@
+# build artifacts
+_build/
+*.o
+*.d
+*.bin
+*.out
+*.map
+build.log
+# hexy sa build-artefaktami; release hexy wersjonujemy recznie w firmware/hex/
+*.hex
+!firmware/hex/*.hex
