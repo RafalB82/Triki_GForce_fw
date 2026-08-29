@@ -26,6 +26,8 @@
 #define TRIKIG_VBT_REST_TH         205u    /* 0.80 m/s^2 — prog ||a|-g| dla bezruchu */
 #define TRIKIG_VBT_REST_FRAMES     8u      /* ~77ms ciaglego spoczynku => rest */
 #define TRIKIG_VBT_V_CLAMP         0x0FA0  /* 4000 q8.8 = 15.6 m/s — anty-windup */
+_Static_assert(TRIKIG_VBT_V_CLAMP <= 0x7FFF,
+               "V_CLAMP must fit int16_t: wire v2 packs vel as i16 (audyt 027)");
 #define TRIKIG_VBT_BIAS_MA_N       16u     /* okno MA biasu (ramki) */
 
 void    vbt_reset(void);                    /* zero stanu; wywolac po imu init */

@@ -6,6 +6,9 @@
  * Zachowane semantyki v19: poll 9ms -> ramka 14B -> ring -> NUS; skale CTRL1=0x44/CTRL2=0x4C.
  * Zmiany vs v21: + trikig_vbt. Nazwa BLE "Triki GForce", ring 14B (byl 168B), sleep = app_timer 1s
  * (iteracje petli dawaly ~67s zamiast 300s), probe debug wyciety, RTT pod flaga TRIKIG_RTT_DIAG.
+ * v0.0.27 (audyt 2026-08-29): WDT 8s (kick w petli glownej, fault=>reset zamiast SOS-loop),
+ * BLE send = jedna proba/drop (default:break — koniec nieskonczonego retry), static_assert
+ * V_CLAMP vs int16_t, TODO btn_cnt, komentarz idle_secs.
  */
 #include <stdint.h>
 #include <stdbool.h>
@@ -26,6 +29,7 @@
 #include "nrf_ble_qwr.h"
 #include "ble_conn_params.h"
 #include "app_timer.h"
+#include "nrf_drv_wdt.h"
 
 #include "trikig_board.h"
 #include "trikig_vbt.h"
@@ -73,6 +77,12 @@ static volatile uint8_t  m_wire_mode = 1;    /* 1 = legacy 14B (default), 2 = v2
 static uint16_t          m_seq = 0;          /* FW sample counter (zasilanie dt po stronie Triki_G) */
 static uint16_t          ring_seq[RING_SLOTS];
 static volatile bool     g_send_info = false;
+static nrf_drv_wdt_channel_id m_wdt_channel;
+
+static void wdt_event_callback(void)
+{
+    /* timeout w kontekscie IRQ — feed niemozliwy; celowo puste, WDT wykona reset. */
+}
 static volatile bool     g_sleep_now = false;
 
 void app_error_fault_handler(uint32_t id, uint32_t pc, uint32_t info)
@@ -84,6 +94,7 @@ void app_error_fault_handler(uint32_t id, uint32_t pc, uint32_t info)
     } else {
         rtt_diag_printf("FAULT id=%u pc=%08x", (unsigned)id, (unsigned)pc);
     }
+    /* SOS-loop bez feedu: WDT (8s) wykona reset — fault konczy sie rebootem (audyt #1). */
     for (;;) {
         led_blink(3, 40, 40);
         nrf_delay_ms(1000);
@@ -119,6 +130,8 @@ static void poll_timeout_handler(void * p_context)
 
 /* ---- sleep 5 min bez polaczenia: app_timer 1s zamiast iteracji petli ---- */
 APP_TIMER_DEF(m_sleep_timer);
+/* idle_secs liczy sekundy BEZ polaczenia (zerowany co iteracje gdy polaczony); przy
+ * disconnect celowo NIE zerowany — liczymy czas bez polaczenia, nie od rozlaczenia (audyt 027). */
 static volatile uint32_t idle_secs = 0;
 static volatile bool    g_go_sleep = false;
 
@@ -303,7 +316,16 @@ int main(void)
 
     uint8_t btn_cnt = 0;
     uint16_t vbt_log_div = 0;
+
+    /* WDT 8s (audyt #1): feed w petli glownej; fault/SOS-loop => reset zamiast zawieszenia. */
+    nrf_drv_wdt_config_t wdt_cfg = NRF_DRV_WDT_DEAFULT_CONFIG;
+    wdt_cfg.reload_value = 8000;
+    APP_ERROR_CHECK(nrf_drv_wdt_init(&wdt_cfg, wdt_event_callback));
+    APP_ERROR_CHECK(nrf_drv_wdt_channel_alloc(&m_wdt_channel));
+    nrf_drv_wdt_enable();
+
     for (;;) {
+        nrf_drv_wdt_channel_feed(m_wdt_channel);
         if (g_sleep_now) {
             g_go_sleep = true;
         }
@@ -323,6 +345,7 @@ int main(void)
         }
 
         if (btn_pressed()) {
+            /* TODO(audyt 027): >3 klikniec = placeholder pod przyszla funkcje (np. forced pairing reset). */
             if (btn_cnt < 255) btn_cnt++;
             if (btn_cnt == 3) { led_blink(2, 60, 60); idle_secs = 0; }
         } else {
@@ -348,14 +371,11 @@ int main(void)
                     p_tx = txbuf;
                     txlen = FRAME_V2_SIZE;
                 }
-                while (m_conn_handle != BLE_CONN_HANDLE_INVALID) {
+                /* v0.0.27 (audyt #2): JEDNA proba + drop przy kazdym bledzie (tez default).
+                 * Zero retry => zero ryzyka zamrozenia petli glownej przez BLE. */
+                if (m_conn_handle != BLE_CONN_HANDLE_INVALID) {
                     uint16_t hvx = txlen;
-                    uint32_t err = ble_nus_data_send(&m_nus, p_tx, &hvx, m_conn_handle);
-                    if (err == NRF_SUCCESS) break;
-                    if (err == NRF_ERROR_INVALID_STATE ||
-                        err == BLE_ERROR_GATTS_SYS_ATTR_MISSING ||
-                        err == NRF_ERROR_RESOURCES) break;   /* v19: drop zamiast blokady */
-                    (void)sd_app_evt_wait();
+                    (void)ble_nus_data_send(&m_nus, p_tx, &hvx, m_conn_handle);
                 }
             }
             ring_rd = (uint8_t)((ring_rd + 1) % RING_SLOTS);
