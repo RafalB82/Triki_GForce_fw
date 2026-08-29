@@ -10,7 +10,8 @@ i komendy RX. Konsument docelowy: aplikacja **Triki_G** (Flutter, D-019/D-021).
 |---|---|
 | **v19** (`trikig_triki_v19.hex`) | PRODUKCJA (end-to-end zweryfikowany: 104.0 Hz, dt 9.6 ms, skale OK) |
 | **v0.0.26** (`firmware/hex/trikig_triki_v0.0.26.hex`) | wire v2 (F1) + komendy RX (F2); sha256 `ef677b0f…` |
-| **v0.0.27** (`firmware/hex/trikig_triki_v0.0.27.hex`) | aktualny development: v0.0.26 + fixes z audytu 2026-08-29 (WDT 8s, BLE send one-shot/drop, static_assert V_CLAMP); sha256 `44eac963…` |
+| **v0.0.27** (`firmware/hex/trikig_triki_v0.0.27.hex`) | v0.0.26 + fixes z audytu 2026-08-29 (WDT 8s, BLE send one-shot/drop, static_assert V_CLAMP); sha256 `44eac963…` |
+| **v0.1.0** (`firmware/hex/trikig_triki_v0.1.0.hex`) | aktualny development: plan wdrożenia K0-K8 (WDT covers boot, IMU init fail-fast, ring_slot_t + snapshot vel/flags przy poll, dup-guard VBT, seq = każda próbka — luki informacyjne, SPEC 5.1); sha256 `bb6e1b28…` |
 
 Semver: MAJOR=0 (beta), MINOR=protokół (wire v2 → 0.1.x docelowo), PATCH=iteracja. Tag FW w RTT + komenda `20 12`.
 
