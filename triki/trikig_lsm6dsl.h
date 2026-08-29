@@ -33,6 +33,8 @@
 
 #define LSM_WHO_AM_I_VAL  0x6Au
 
+#define LSM_RESET_MAX_ITERS 500u  /* 500*100us = 50ms timeout na SW reset (K7) */
+
 bool    lsm6dsl_init(void);                    /* WHO_AM_I + SW reset + config, z readbackiem RTT */
 bool    lsm6dsl_read_motion(uint8_t *dst12);   /* burst gyro(6)+acc(6) i16LE */
 

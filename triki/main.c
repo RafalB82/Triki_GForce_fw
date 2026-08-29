@@ -270,6 +270,14 @@ int main(void)
     nrf_gpio_cfg_input(PIN_BTN, NRF_GPIO_PIN_PULLUP);
     nrf_gpio_cfg_input(PIN_IMU_INT1, NRF_GPIO_PIN_NOPULL);
 
+    /* WDT uzbrojony jako pierwsza rzecz — chroni caly boot, nie tylko main loop (plan 027 K0).
+     * Boot ma ~2.8s LED-blinkow; reload 12s daje zapas. Pierwszy feed w petli glownej przejmuje. */
+    nrf_drv_wdt_config_t wdt_cfg = NRF_DRV_WDT_DEAFULT_CONFIG;
+    wdt_cfg.reload_value = 12000;
+    APP_ERROR_CHECK(nrf_drv_wdt_init(&wdt_cfg, wdt_event_callback));
+    APP_ERROR_CHECK(nrf_drv_wdt_channel_alloc(&m_wdt_channel));
+    nrf_drv_wdt_enable();
+
     rtt_diag_printf("S1 main enter " TRIKIG_FW_TAG);
     led_blink(1, 40, 80);
     nrf_delay_ms(700);
@@ -317,13 +325,7 @@ int main(void)
     uint8_t btn_cnt = 0;
     uint16_t vbt_log_div = 0;
 
-    /* WDT 8s (audyt #1): feed w petli glownej; fault/SOS-loop => reset zamiast zawieszenia. */
-    nrf_drv_wdt_config_t wdt_cfg = NRF_DRV_WDT_DEAFULT_CONFIG;
-    wdt_cfg.reload_value = 8000;
-    APP_ERROR_CHECK(nrf_drv_wdt_init(&wdt_cfg, wdt_event_callback));
-    APP_ERROR_CHECK(nrf_drv_wdt_channel_alloc(&m_wdt_channel));
-    nrf_drv_wdt_enable();
-
+    /* WDT uzbrojony na starcie main (K0); tu tylko feed (fault/SOS-loop => reset). */
     for (;;) {
         nrf_drv_wdt_channel_feed(m_wdt_channel);
         if (g_sleep_now) {

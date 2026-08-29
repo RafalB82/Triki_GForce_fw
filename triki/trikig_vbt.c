@@ -25,8 +25,6 @@ static inline int32_t acc_q88(int16_t r)
     return ((int32_t)r * 314) >> 8;
 }
 
-static inline int32_t iabs(int32_t v) { return v < 0 ? -v : v; }
-
 /* integer sqrt (bit-by-bit, bez FPU; 111 wywolan/s — pomijalne) */
 static int32_t isqrt32(uint32_t n)
 {

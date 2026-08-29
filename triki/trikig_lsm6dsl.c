@@ -45,24 +45,33 @@ bool lsm6dsl_init(void)
     }
     if (who != LSM_WHO_AM_I_VAL) return false;
 
-    /* kolejnosc wg datasheet: reset -> CTRL3 -> FIFO off -> CTRL1/2 (start ODR) */
-    (void)reg_write(LSM_CTRL3_C, 0x01);              /* SW reset */
+    /* kolejnosc wg datasheet: reset -> CTRL3 -> FIFO off -> CTRL1/2 (start ODR).
+     * K6 (plan 027): bledy I2C configu EGZEKWOWANE (fail-fast, nie fail-silent). */
+    bool ok = reg_write(LSM_CTRL3_C, 0x01);          /* SW reset */
+
+    uint16_t wait_iters = 0;
     do {
         if (!reg_read(LSM_CTRL3_C, &who, 1)) return false;
+        if (++wait_iters > LSM_RESET_MAX_ITERS) {    /* K7: timeout zamiast wiecznej petli */
+            rtt_diag_printf("S2 CTRL3 reset TIMEOUT");
+            return false;
+        }
+        nrf_delay_us(100);
     } while (who & 0x01);
-    (void)reg_write(LSM_CTRL3_C, LSM_CTRL3_C_CFG);   /* BDU + IF_INC */
 
-    (void)reg_write(0x0A, 0x00);                     /* FIFO_CTRL5 = bypass (poll strategy) */
+    ok = reg_write(LSM_CTRL3_C, LSM_CTRL3_C_CFG) && ok;   /* BDU + IF_INC */
+    ok = reg_write(0x0A, 0x00)                    && ok;   /* FIFO_CTRL5 bypass (poll) */
+    ok = reg_write(LSM_CTRL1_XL, LSM_CTRL1_XL_V19) && ok;
+    ok = reg_write(LSM_CTRL2_G,  LSM_CTRL2_G_V19)  && ok;
 
-    (void)reg_write(LSM_CTRL1_XL, LSM_CTRL1_XL_V19);
-    (void)reg_write(LSM_CTRL2_G,  LSM_CTRL2_G_V19);
-
-    /* readback: co faktycznie siedzi na sprzecie (D-017) */
-    {
-        uint8_t rc1 = 0, rc2 = 0;
-        (void)reg_read(LSM_CTRL1_XL, &rc1, 1);
-        (void)reg_read(LSM_CTRL2_G,  &rc2, 1);
-        rtt_diag_printf("FW=" TRIKIG_FW_TAG " c1=%02x c2=%02x", rc1, rc2);
+    /* readback + wyegzekwowanie (D-017): config musi siedziec, nie tylko byc zalogowany */
+    uint8_t rc1 = 0, rc2 = 0;
+    ok = reg_read(LSM_CTRL1_XL, &rc1, 1) && ok;
+    ok = reg_read(LSM_CTRL2_G,  &rc2, 1) && ok;
+    rtt_diag_printf("FW=" TRIKIG_FW_TAG " c1=%02x c2=%02x", rc1, rc2);
+    if (!ok || rc1 != LSM_CTRL1_XL_V19 || rc2 != LSM_CTRL2_G_V19) {
+        rtt_diag_printf("S2 config MISMATCH ok=%d rc1=%02x rc2=%02x", ok, rc1, rc2);
+        return false;
     }
     return true;
 }
