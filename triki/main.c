@@ -15,6 +15,9 @@
  * edge-detect (3 wcisniecia wg SPEC 6); clamp p w VBT isqrt (uint32 overflow); app_timer_init
  * przed BLE; g_info_req = licznik zadan 20 12; split GATTS/GATTC timeout; Makefile: target
  * release (TRIKIG_RTT_DIAG=0) + ostrzezenie SD-first przy flash.
+ * v0.2.0 (F5): SAADC bateria CR2032 (trikig_batt, AIN2/P0.04, dzielnik przez diode);
+ * probkowanie 1s w sleep tick; ramka statusowa 22 04 (RX 20 17) = bat_mV u16LE;
+ * flags v2 bit3 = low-battery (< TRIKIG_BATT_LOW_MV).
  */
 #include <stdint.h>
 #include <stdbool.h>
@@ -40,6 +43,7 @@
 
 #include "trikig_board.h"
 #include "trikig_vbt.h"
+#include "trikig_batt.h"
 #include "trikig_version.h"
 #include "trikig_bb_i2c.h"
 #include "trikig_lsm6dsl.h"
@@ -94,6 +98,9 @@ static uint16_t          m_sample_seq = 0;
 static uint8_t           s_prev_raw[12] = {0};   /* K3: detekcja duplikatu (memcmp) */
 static volatile uint16_t s_dup_count = 0;        /* K3 diag: licznik duplikatow */
 static volatile uint8_t  g_info_req = 0;         /* licznik zadan FW info (20 12); set: SWI, consume: main (audyt 2026-08-30) */
+static volatile uint8_t  g_batt_req = 0;         /* licznik zadan baterii (20 17); ten sam wzorzec co g_info_req */
+static volatile uint16_t g_batt_mv  = 0;         /* ostatni pomiar [mV]; 0 = brak (producent: sleep tick, konsument: main) */
+static volatile bool     g_batt_low = false;     /* flags v2 bit3 */
 static nrf_drv_wdt_channel_id m_wdt_channel;
 
 static void wdt_event_callback(void)
@@ -190,6 +197,13 @@ static volatile bool    g_go_sleep = false;
 static void sleep_timeout_handler(void * p_context)
 {
     (void)p_context;
+    /* F5: pomiar baterii 1x/s niezaleznie od polaczenia (blokujace ~0.5ms w SWI —
+     * dopuszczalne; poll I2C robi ~300us w tym samym kontekscie co 9ms). */
+    uint16_t mv = batt_sample_mv();
+    if (mv != 0) {
+        g_batt_mv  = mv;
+        g_batt_low = batt_is_low(mv);
+    }
     if (m_conn_handle != BLE_CONN_HANDLE_INVALID) {
         idle_secs = 0;
         return;
@@ -255,6 +269,9 @@ static void nus_evt_handler(ble_nus_evt_t *p_evt)
             break;
         case 0x12:                       /* FW info request -> ramka 22 03 */
             g_info_req++;                /* licznik: zadanie z SWI nie przepada przy consume w main */
+            break;
+        case 0x17:                       /* battery request -> ramka 22 04 */
+            g_batt_req++;
             break;
         case 0x15:                       /* stream on/off */
             if (len >= 3) m_stream_on = (d[2] == 0x01);
@@ -346,6 +363,13 @@ int main(void)
     }
     if (!m_imu_ok) rtt_diag_printf("S2 IMU DEAD (HW?)");
     vbt_reset();                                 /* bias grawitacji zasilony pierwszymi ramkami (spoczynek) */
+    batt_init();                                 /* F5: SAADC AIN2 + kalibracja offsetu (blokujaca ~ms) */
+    uint16_t batt_mv_boot = batt_sample_mv();    /* pierwszy pomiar od razu (nie czekamy 1s ticka) */
+    if (batt_mv_boot != 0) {
+        g_batt_mv  = batt_mv_boot;
+        g_batt_low = batt_is_low(batt_mv_boot);
+    }
+    rtt_diag_printf("S2 batt=%umV", batt_mv_boot);
     led_blink(2, 40, 80);
     nrf_delay_ms(700);
 
@@ -400,6 +424,16 @@ int main(void)
             rtt_diag_printf("CMD info -> mode v%u", m_wire_mode);
         }
 
+        if (g_batt_req != 0 && m_conn_handle != BLE_CONN_HANDLE_INVALID) {
+            g_batt_req--;                /* ten sam wzorzec co g_info_req */
+            uint16_t mv = g_batt_mv;
+            if (mv == 0) mv = batt_sample_mv();   /* fallback: zapytanie przed pierwszym tickiem 1s */
+            uint8_t batt[4] = {0x22, 0x04, (uint8_t)(mv & 0xFF), (uint8_t)(mv >> 8)};
+            uint16_t bhvx = sizeof(batt);
+            (void)ble_nus_data_send(&m_nus, batt, &bhvx, m_conn_handle);
+            rtt_diag_printf("CMD batt -> %umV", mv);
+        }
+
         if (g_go_sleep) {
             (void)app_timer_stop(m_poll_timer);
             (void)app_timer_stop(m_sleep_timer);
@@ -435,7 +469,8 @@ int main(void)
                     memcpy(&txbuf[4], ring[slot].raw, 12);
                     txbuf[16] = (uint8_t)((uint16_t)ring[slot].vel_mms & 0xFF);
                     txbuf[17] = (uint8_t)((uint16_t)ring[slot].vel_mms >> 8);
-                    txbuf[18] = ring[slot].flags;
+                    /* bity 0-2 = snapshot VBT; bit3 = low-battery (F5, OR przy wysylce) */
+                    txbuf[18] = ring[slot].flags | (g_batt_low ? TRIKIG_BATT_FLAGS_LOW : 0);
                     p_tx = txbuf;
                     txlen = FRAME_V2_SIZE;
                 } else {

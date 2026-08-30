@@ -18,7 +18,8 @@
 | Flash zewn. | MX25R8035F 1MB SPI (CS=12, SCK=14, MOSI=15, MISO=16) — NIE uzywany | [?] piny ze schematu |
 | Kryształ 32k | BRAK -> LFCLK = RC wewnetrzny (SRC=0, CTIV=16) | [Z] |
 | Debug | SWD pady (3V3/GND/nRESET/SWDIO/SWCLK), probe: Tigard/Win11 lub Pico+Free-DAP; RTT ch0 | [Z] |
-| Zasilanie | bateria + LDO (en=06 wg schematu [?]); pomiar baterii: brak (roadmap SAADC) | — |
+| Zasilanie | CR2032 3V, bez LDO — bezposrednio na VDD (pin 9); przez diode do dzielnika rezystorowego -> wylot na P0.04/AIN2 (i rownolegle P0.12) | [Z] plyta 2026-08-30 |
+| Pomiar baterii | SAADC AIN2 (gain 1/6, ref 0.6V, FS 3.6V), srednia 4x, kalibracja offsetu przy boocie; ramka `22 04` + flags bit3 (od 0.2.0) | [Z] FW; skala DO KALIBRACJI |
 
 ### Pinout uzywany przez FW
 | Pin | Funkcja | Konfiguracja |
@@ -26,10 +27,14 @@
 | P0.05 | I2C SDA (bit-bang) | open-drain S0D1 + pullup wew. |
 | P0.06 | I2C SCL (bit-bang) | open-drain S0D1 + pullup wew. |
 | P0.09 | LSM INT1 | input NOPULL (nieuzywany w strategii poll; wyjscie na przyszly FIFO/DRDY) |
+| P0.04 | SAADC AIN2 — wylot dzielnika baterii (CR2032 przez diode); node rowniez na P0.12 (kolizja z CS MX25R przy F6) | SAADC od 0.2.0 |
 | P0.25 | BTN do GND | input PULLUP, active-low; sense dla wybudzenia z SYSTEMOFF |
 | P0.28 | LED | output, active-low |
 
 Uwaga: P0.09/P0.10 to G-klasa INT (aktywnie-low wg schematu) — polaryzacja niezweryfikowana [?].
+Uwaga: notka IMU „SA0=P0.04 -> VDD" jest sprzeczna z dzielnikiem na P0.04 (0x6A [Z] implikuje
+SA0 wysokie; node dzielnika ~1-2V dałby 0x68) — SA0 prawdopodobnie zwiazane do VDD na plycie,
+do korekty po weryfikacji [?].
 
 ---
 
@@ -111,6 +116,19 @@ Brak połączenia BLE = brak inkrementacji (to "nie zbieramy", nie drop).
 - PWA eksportuje SI — |a|~9.81 w spoczynku jest POPRAWNE (D-017 pkt 5).
 - Zmiana layoutu/skali = decyzja cross-project z koordynacja Triki_G (D-019). Wire v1 do wycofania w 1.0.0 (D-021).
 
+### 5.2 Ramka statusowa baterii (0.2.0)
+
+```
+Ramka 4B: [0x22][0x04] [mv_l mv_h]     bat u16LE [mV]; 0 = pomiar niemozliwy
+Zadanie: RX `20 17` (1 zadanie = 1 ramka); FW cache'uje pomiar z ticku 1s (fallback: pomiar na zadanie).
+flags v2 (ramka 19B): bit3 = low-battery (< 2400 mV); bity 0-2 = VBT bez zmian.
+```
+
+- Skala node->Vbat: `TRIKIG_BATT_SCALE_NUM/DEN` + `OFFSET_MV` (Vf diody) w trikig_batt.h —
+  **DO KALIBRACJI multimetrem na egzemplarzu** (kryterium F5: ±50 mV vs miernik). Wartosci
+  startowe zakladaja dzielnik 1:1 bez kompensacji Vf.
+- Pomiar = Vbat minus Vf diody (temp. zależna — walidacja przy pełnym zakresie SOC).
+
 ---
 
 ## 6. Power / sleep
@@ -175,7 +193,7 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 
 1. Duplikaty probek (timer 9ms vs ODR 104Hz) — do decyzji: 10ms/dryf albo INT1 DRDY [O-013 pkt 3].
 2. Brak backpressure: NRF_ERROR_RESOURCES = drop ramki (brak buforowania na conn interval) [O-013 pkt 2].
-3. Brak pomiaru baterii (SAADC + status w ramce/char) [O-013 pkt 5].
+3. Pomiar baterii — ZROBIONE 0.2.0 (SAADC AIN2, ramka `22 04` na `20 17`, flags bit3); kalibracja skali (ratio+Vf) na egzemplarzu pending.
 4. Brak watchdog — ZROBIONE v0.0.27 (WDT 12s, covers boot).
 5. BB I2C ~250kHz = CPU-heavy burst (12B @104Hz — OK, ale bez DMA).
 6. TWIM i FIFO nie dzialaja na tym sprzecie bez diagnozy LA [O-013 pkt 8, AN4650].
@@ -189,7 +207,7 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 2. **Wire v2 (przelaczalny, koordynacja z Triki_G):** FW-side sample counter / timestamp ms (Android timestampy burstowe: dt 0..51ms), velocity (juz liczone w v22), bateria; tryb legacy 14B zostaje. MECHANIZM (decyzja Rafała 2026-08-29): rozpoznanie wersji przez KOMENDĘ RX po connect (aplikacja przełącza tryb), bez osobnej charakterystyki. Propozycja formatu (do ustalenia z Triki_G przy implementacji): `20 11 01` = wire v2 on, `20 11 00` = legacy, `20 12` = FW info (wersja/wiecej); komenda FW_INFO przed wlaczeniem v2 jako handshake.
 3. **Komendy RX (kontrola sensora z aplikacji):** stream on/off, ODR/skale, sleep-now, FW info — rozszerzenie handlera 0x20 0x10.
 4. Send-path: backpressure + licznik dropow (jako telemetria dla Triki_G).
-5. Sleep + pomiar pradu; SAADC bateria.
+5. Sleep + pomiar pradu; SAADC bateria — bateria ZROBIONE 0.2.0 (pomiar pradu pending).
 6. Watchdog + nieblokujacy error-path.
 7. RTT OFF build produkcyjny (TRIKIG_RTT_DIAG=0).
 8. **Offline-record na MX25R8035F (1MB):** nagrywanie serii bez telefonu, sync przez Triki_G — pelna swoboda treningowa.

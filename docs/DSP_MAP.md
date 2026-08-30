@@ -67,6 +67,8 @@
 
 ### F5 — telemetria i niezawodność (v0.3.0)
 - SAADC bateria (mV) w flags/ramce statusowej; watchdog; licznik dropów send-path jako telemetria; pomiar prądu (PPK) po drodze.
+- **Bateria: WDROŻONA 0.2.0** (przed harmonogramem): SAADC AIN2/P0.04 (CR2032 przez diode,
+  bez LDO), ramka `22 04` na RX `20 17`, flags v2 bit3 low-batt; skala ratio+Vf DO KALIBRACJI na egzemplarzu.
 - **Kryterium:** WDT po sztucznym hangu; dropy widoczne w aplikacji; bateria ±50mV vs miernik.
 
 ### F6 — offline-record na MX25R8035F (v0.4.0)
