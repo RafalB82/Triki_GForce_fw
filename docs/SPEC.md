@@ -199,7 +199,7 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 | Arytmetyka | fixed-point q8.8/q16.16 (brak FPU); 2x isqrt/ramke (rest + renorm) |
 | API | vbt_reset() po imu_init; vbt_on_frame(raw12, dt_q16); vbt_set_axis(q12[3]); vbt_velocity_mms() [mm/s]; vbt_moving(); vbt_flags() (bit2 = g-estimated) |
 | Diag | RTT ~1s: `VBT v=... mv=... dup=...` + `DIAG drdy=... smpl/dup/rdrop/gap/bdrop | dtf/fb/twi/sadc | dt min/avg/max | max acq/dsp/g/lin/v/ble us` (pod TRIKIG_RTT_DIAG); profil DSP gravity/linear/velocity us pod TRIKIG_VBT_PROFILE |
-| Walidacja | harness offline `tools/vbt_offline` (5 scenariuszy syntetycznych PASS: rest60/rot/rot_move/rep/rep_soft); znane ograniczenie: wander ~±0.4 m/s przy jednoczesnej rotacji+oscylacji (adversarial, samolimitujacy, powrot do 0 po ustaniu) |
+| Walidacja | harness offline `tools/vbt_offline` (**6 scenariuszy PASS**: rest60/rot/rot_move/rep/rep_soft/bias) + replay realnych logów nRF Connect (`nrflog2raw.py | vbt_offline stdin`) + **[P] walidacja RTT 0.3.4: dwa bursty ruchów góra-dół na urządzeniu — v ±100-500 mm/s, powrót do 0 (mv=0), zero dryfu**; znane ograniczenie: wander ~±0.4 m/s przy jednoczesnej rotacji+oscylacji (adversarial, samolimitujacy) |
 | Ograniczenia | korekcja g tylko quasi-statyka => dryf gyro-bias przy dlugim trzymaniu (typ. 40mdps => ~2.4deg/min); os stalych w ukladzie kapsla; walidacja terenowa vs Triki_G/PWA przed produkcyjnym uzyciem |
 | Expose | API wewnetrzne; pole vel/flags wire v2 bez zmian |
 
