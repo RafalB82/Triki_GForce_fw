@@ -24,7 +24,9 @@ Semver: MAJOR=0 (beta), MINOR=protokół (wire v2 → 0.1.x docelowo), PATCH=ite
    cd triki
    make            # SDK_ROOT domyślnie ~/nrf5sdk (override: make SDK_ROOT=/sciezka)
    ```
-   Wynik: `_build/nrf52810_xxaa.hex`.
+   Wynik: `_build/nrf52810_xxaa.hex`. Build produkcyjny (RTT OFF): `make release`.
+   UWAGA: buduj przez `cd triki && make` — `make -C triki` włącza print-directory, który
+   zaśmieca generowany plik wejściowy linkera (`.in`) i wywala link (szablon SDK 17).
 3. Weryfikacja odtworzenia: build referencyjny v0.0.26 → text=24620, bss=3396. Drobne różnice rozmiaru (toolchain) są OK; funcjonalna weryfikacja = FW tag w RTT + test streamu.
 
 ## Flash (kapsel)
