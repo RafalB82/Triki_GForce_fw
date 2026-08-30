@@ -41,9 +41,13 @@
  * v0.3.5: DRDY na INT2 (pin 9 ukladu wg datasheet ukladu — INT1 ukladu niepolaczony,
  * dlatego probe 0.3.3/0.3.4 nie widzial krawedzi); register INT2_CTRL (0x0E); probe
  * rozszerzona: pin P0.09/P0.10 x polaryzacja (drdy_mode 1-4).
+ * v0.3.11 (pomiar plyty [P]: INT1->P0.09, INT2->P0.10): wczesniejszy "brak krawedzi"
+ * byl FALSE-NEGATIVE — DRDY z BDU zalega HIGH dopoki nikt nie czyta OUT, a scan/probe
+ * biegly przed startem pollingu (zero odczytow => zero rosnacych krawedzi). Fix: okna
+ * probe/scan z drain-read co 10ms (krawedz co ~9.6ms); probe domyslnie ON.
  * v0.3.10: DRDY zamkniete dla tego HW — scan [P] (29 pinow, INT1+INT2 wlaczone, readback
  * OK) = zero krawedzi => zaden INT nie jest poprowadzony do nRF; probe domyslnie off
- * (TRIKIG_DRDY_PROBE), akwizycja = polling (zwalidowany).
+ * (TRIKIG_DRDY_PROBE), akwizycja = polling (zwalidowany). — WNIOSEK ODDWOLANY (fneg)
  * v0.3.9 (log wire v2 22:22): regresja 0.3.7 — nauka biasu w quasi-bezruchu pochlaniala
  * wolne rotacje (<=15dps) => wbias zatruty => propagacja nadrabiala w zla strone => rampa
  * do 15054; repro harness slowrot (FAIL przed, PASS po); nauka TYLKO przy pelnym rest I
@@ -262,7 +266,15 @@ static bool drdy_probe(void)
                 return false;
             }
             nrf_drv_gpiote_in_event_enable(pins[pi], true);
-            nrf_delay_ms(100);                       /* ~10 krawedzi @104Hz */
+            /* 0.3.11: DRDY z BDU zalega HIGH dopoki nikt nie czyta OUT — w oknie probe
+             * nikt nie czyta (polling jeszcze nie startuje) => zero rosnacych krawedzi
+             * (false-negative wszystkich probe 0.3.1-0.3.10!). Drain-read co 10ms kasuje
+             * DRDY => krawedz co ~9.6ms (104Hz). */
+            for (uint8_t k = 0; k < 10; k++) {
+                uint8_t drain[12];
+                nrf_delay_ms(10);
+                (void)lsm6dsl_read_motion(drain);
+            }
             s_probing = false;
             uint16_t edges = s_probe_cnt;            /* 0.3.8: dedykowany licznik (FIFO 4 < prog 5) */
             if (edges >= 5) {
@@ -312,7 +324,12 @@ static void pin_scan(void)
         cfg.pull = NRF_GPIO_PIN_PULLDOWN;
         if (nrf_drv_gpiote_in_init(p, &cfg, drdy_handler) == NRF_SUCCESS) {
             nrf_drv_gpiote_in_event_enable(p, true);
-            nrf_delay_ms(60);
+            /* 0.3.11: drain-read — jak w probe (DRDY zalega HIGH bez odczytow) */
+            for (uint8_t k = 0; k < 6; k++) {
+                uint8_t drain[12];
+                nrf_delay_ms(10);
+                (void)lsm6dsl_read_motion(drain);
+            }
             s_probing = false;
             nrf_drv_gpiote_in_event_disable(p);
             nrf_drv_gpiote_in_uninit(p);
@@ -604,9 +621,9 @@ int main(void)
     pin_scan();
 #endif
 #if TRIKIG_DRDY_PROBE
-    /* 0.3.10: probe wylaczony domyslnie — scan 0.3.9 [P] pokazal, ze zaden INT ukladu
-     * nie jest poprowadzony do nRF na tym module (29 pinow x INT1+INT2, zero krawedzi).
-     * Akwizycja = polling (zwalidowany end-to-end). Probe zostaje dla nowego HW. */
+    /* 0.3.11: probe z powrotem domyslnie ON — INT1=P0.09, INT2=P0.10 potwierdzone
+     * pomiarem plyty [P]; wczesniejszy "brak krawedzi" byl false-negative skanu/probe
+     * (DRDY zalega HIGH bez odczytow — patrz komentarz w oknie probe). */
     if (m_imu_ok && nrf_drv_gpiote_init() == NRF_SUCCESS && drdy_probe()) {
         /* DRDY aktywny: probki procesowane w main loop z timestampow ISR */
     } else {

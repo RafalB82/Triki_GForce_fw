@@ -26,7 +26,8 @@
 |---|---|---|
 | P0.05 | I2C SDA (bit-bang) | open-drain S0D1 + pullup wew. |
 | P0.06 | I2C SCL (bit-bang) | open-drain S0D1 + pullup wew. |
-| P0.09/P0.10 | wolne — **zaden INT ukladu (INT1/INT2) NIE jest poprowadzony do nRF** (scan 0.3.10 [P]: 29 pinow, oba rejestry DRDY wlaczone, readback OK, zero krawedzi) | [P] scan 0.3.10 |
+| P0.09 | **LSM INT1** | [P] pomiar plyty 2026-08-30 |
+| P0.10 | **LSM INT2/DRDY** — DRDY_XL przez INT2_CTRL (0x0E), GPIOTE, timestamp probek | [P] pomiar plyty 2026-08-30 |
 | P0.04 | SAADC AIN2 — **Vbat (bez dzielnika 2×; pomiar FW 0.3.3)** | SAADC od 0.2.0, skala 1/1 od 0.3.3 |
 | P0.12 | prawdopodobny wylot dzielnika (drugie piete "node" z earlier notki — P0.04 i P0.12 to rozne node'y, rozwiazane pomiarem FW 0.3.3); wylacznie dzielnik — NIE CS flasha | nieuzywany przez FW |
 | P0.25 | BTN do GND | input PULLUP, active-low; sense dla wybudzenia z SYSTEMOFF |
@@ -59,9 +60,10 @@ INT1 DRDY (LSM6DSL INT1_CTRL=DRDY_XL) -> GPIOTE ISR (timestamp DWT)
 ```
 
 ### Kolekcja (od 0.3.1)
-- **Polling 9ms** (app_timer) — finalna strategia dla tego HW (scan 0.3.10 [P]: INT1/INT2
-  ukladu niepoprowadzone do nRF). Kod DRDY (GPIOTE + timestamp ISR + watchdog 30ms)
-  zachowany za TRIKIG_DRDY_PROBE=1 dla nowego HW/rev.
+- **DRDY**: INT2 (P0.10) -> GPIOTE, timestamp w ISR, odczyt w petli glownej (0.3.11;
+  probe z drain-read — patrz SPEC 10.7). Fallback: polling 9ms + watchdog 30ms
+  (`drdy_fallbacks`). UWAGA HW: DRDY z BDU zalega HIGH bez odczytow OUT — kazdy test
+  INT musi czytac dane w oknie pomiaru.
 - **dt = t[n]-t[n-1]** z timestampow DRDY (TIMER1 @1MHz — **DWT->CYCCNT nie istnieje na nRF52810**); clamp 4-40ms (`dt_faults`), gap > 60ms (RTC1) => twardy ZUPT + dt nominalny; diag: `dt min/avg/max us`.
 - **memcmp dup-guard = wylacznie diagnostyka** w trybie DRDY (probke identyfikuje DRDY,
   P0 audyt 2026-08-30); w trybie polling duplikat nadal nie wchodzi do calkowania.
@@ -211,7 +213,7 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 4. Brak watchdog — ZROBIONE v0.0.27 (WDT 12s, covers boot).
 5. BB I2C CPU-heavy — ZROBIONE 0.3.1 dla path danych (TWIM 400kHz + DMA; bb zostaje dla init/bus-clear/fault-recovery).
 6. FIFO LSM6DSL — ODROCZONE do decyzji ODR >104 Hz (przy 104Hz DRDY+ring16 wystarcza; bez LA bitfields FIFO niezweryfikowane [AN4650, D-016]).
-7. DRDY/INT — **ZAMKNIETE 0.3.10 [P]: nieaktywne sprzetowo na tym module**. Scan GPIO (29 pinow, INT1_CTRL+INT2_CTRL wlaczone z readbackiem, 60ms/pin, pull-down) = zero krawedzi na jakimkolwiek pinie. "DRDY na INT2/pin 9" z notki ukladu opisuje mozliwosc ukladu, nie poprowadzenie na plycie. Akwizycja finalnie = polling 9ms (zwalidowany end-to-end 0.3.4); probe DRDY + timestampy zostaja w kodzie za TRIKIG_DRDY_PROBE dla nowego HW/rev.
+7. DRDY/INT — **ZAMKNIETE 0.3.11 [P]**: INT1->P0.09, INT2->P0.10 (pomiar plyty). Wczesniejsze "zero krawedzi" w scan/probe (0.3.1-0.3.10) bylo FALSE-NEGATIVE: DRDY z BDU zalega HIGH dopoki nikt nie czyta rejestrow OUT, a scan/probe biegly przed startem pollingu (zero odczytow). Fix 0.3.11: okna probe/scan z drain-read co 10ms => krawedz co ~9.6ms; probe domyslnie ON; DRDY finalnie dziala (INT2_CTRL, P0.10).
 10. TWIM vs D-016 (audyt A): D-016 (bb_i2c.h) mówił "TWIM0 nie działa na tym sprzęcie" — C8 przywraca TWIM z fallbackiem bb i banem po 3 faultach z rzędu. ROZSTRZYZGA flash v0.3.2: `twim_faults`=0 → D-016 nieaktualne; `twi` rośnie i RTT pokaże "TWIM banned" → żyjemy z bb. Do weryfikacji PRZED produkcją.
 11. SAADC fail był cichy (audyt F/G) — od 0.3.2 licznik `sadc` w diag + guard sum==0; OFFSET_MV nadal = 0 (DO KALIBRACJI na egzemplarzu, SPEC 5.2).
 12. `bdrop` = 100% w logu 0.3.3 => prawdopodobnie klient bez subskrypcji CCCD (NRF_ERROR_INVALID_STATE); od 0.3.4 FW loguje kod pierwszego bledu (`BLE send err=0x..`, 8 = INVALID_STATE). Do potwierdzenia z subskrypcja PWA — bdrop ma byc ~0 przy streamie.
