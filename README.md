@@ -30,7 +30,11 @@ Semver: MAJOR=0 (beta), MINOR=protokół (wire v2 → 0.1.x docelowo), PATCH=ite
    cd triki
    make            # SDK_ROOT domyślnie ~/nrf5sdk (override: make SDK_ROOT=/sciezka)
    ```
-   Wynik: `_build/nrf52810_xxaa.hex`. Build produkcyjny (RTT OFF): `make release`.
+   Wynik: `_build/nrf52810_xxaa.hex`. Build produkcyjny (RTT OFF): `make release` — **TYLKO na wyraźne zamówienie**.
+   **Zasada (obowiązuje od 0.3.3):** domyślnie buduje się wariant DEV (RTT=1, `_rtt.hex`)
+   do walidacji na sprzęcie; build produkcyjny/release hex powstaje wyłącznie na wyraźne
+   żądanie (np. "zbuduj release", promocja produkcji). Release hex jest RTT-silent —
+   JLink RTT pokaże "No control block found" (to oczekiwane, nie błąd wgrywania).
    UWAGA: buduj przez `cd triki && make` — `make -C triki` włącza print-directory, który
    zaśmieca generowany plik wejściowy linkera (`.in`) i wywala link (szablon SDK 17).
 3. Weryfikacja odtworzenia: build referencyjny v0.0.26 → text=24620, bss=3396. Drobne różnice rozmiaru (toolchain) są OK; funcjonalna weryfikacja = FW tag w RTT + test streamu.
