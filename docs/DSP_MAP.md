@@ -68,12 +68,13 @@
 ### F5 — telemetria i niezawodność (v0.3.0)
 - SAADC bateria (mV) w flags/ramce statusowej; watchdog; licznik dropów send-path jako telemetria; pomiar prądu (PPK) po drodze.
 - **Bateria: WDROŻONA 0.2.0** (przed harmonogramem): SAADC AIN2/P0.04 (CR2032 przez diode,
-  bez LDO), ramka `22 04` na RX `20 17`, flags v2 bit3 low-batt; skala ratio+Vf DO KALIBRACJI na egzemplarzu.
+  bez LDO), dzielnik 100k/100k (1:1), ramka `22 04` na RX `20 17`, flags v2 bit3 low-batt; OFFSET = Vf diody DO KALIBRACJI na egzemplarzu.
 - **Kryterium:** WDT po sztucznym hangu; dropy widoczne w aplikacji; bateria ±50mV vs miernik.
 
 ### F6 — offline-record na MX25R8035F (v0.4.0)
 - Nagrywanie serii (raw v1 + eventy) do flash 1MB bez telefonu; sync przez Triki_G po połączeniu (download + kasowanie sektorów).
-- SPI driver (piny CS=12 SCK=14 MOSI=15 MISO=16 [? schemat]) + wear-leveling prosty, weryfikacja JEDEC ID.
+- SPI driver (piny SCK=14 MOSI=15 MISO=16 [? schemat]; CS **NIE P0.12** — P0.12 = dzielnik
+  baterii, plyta 2026-08-30; CS do ustalenia ze schematu) + wear-leveling prosty, weryfikacja JEDEC ID.
 - **Kryterium:** 20 min treningu offline zapisane i zsynchronizowane 1:1 z live-streamem równoległym.
 
 ### F7 — energy optimization (v0.5.x, po LA)

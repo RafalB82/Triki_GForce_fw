@@ -21,8 +21,10 @@
 #define TRIKIG_BATT_SAMPLES      4u      /* srednia software'owa (blokujaca) */
 
 /* Skala node->Vbat: Vbat = node_mV * NUM / DEN + OFFSET_MV.
- * DO KALIBRACJI multimetrem na egzemplarzu (ratio dzielnika + Vf diody);
- * wartosci startowe zakladaja dzielnik 1:1 z pominieciem Vf. Kryterium F5: ±50mV. */
+ * Dzielnik 100k/100k (1:1) potwierdzony plyta 2026-08-30 -> NUM=2, DEN=1.
+ * OFFSET_MV = Vf diody — DO KALIBRACJI: OFFSET = Vbat(miernik) − FW_mv;
+ * punkt roboczy ~12uA przez 200k: Vf ~0.5-0.55V (Si) / ~0.15-0.25V (Schottky).
+ * Kryterium F5: ±50mV. */
 #define TRIKIG_BATT_SCALE_NUM    2u
 #define TRIKIG_BATT_SCALE_DEN    1u
 #define TRIKIG_BATT_OFFSET_MV    0

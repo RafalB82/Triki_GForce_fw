@@ -15,11 +15,11 @@
 | MCU | nRF52810 (192K flash / 24K RAM, Cortex-M4, bez FPU utilized) | [Z] |
 | SoftDevice | S112 7.2.0 @ 0x0, app @ 0x19000 | [Z] |
 | IMU | LSM6DSL, I2C addr 0x6A (SA0=P0.04 -> VDD), WHO_AM_I(0x0F)=0x6A | [Z] |
-| Flash zewn. | MX25R8035F 1MB SPI (CS=12, SCK=14, MOSI=15, MISO=16) — NIE uzywany | [?] piny ze schematu |
+| Flash zewn. | MX25R8035F 1MB SPI — NIE uzywany; CS **NIE jest na P0.12** (P0.12 = dzielnik baterii, zweryfikowane plyta 2026-08-30); CS/SCK/MOSI/MISO nieznane | [?] piny ze schematu |
 | Kryształ 32k | BRAK -> LFCLK = RC wewnetrzny (SRC=0, CTIV=16) | [Z] |
 | Debug | SWD pady (3V3/GND/nRESET/SWDIO/SWCLK), probe: Tigard/Win11 lub Pico+Free-DAP; RTT ch0 | [Z] |
-| Zasilanie | CR2032 3V, bez LDO — bezposrednio na VDD (pin 9); przez diode do dzielnika rezystorowego -> wylot na P0.04/AIN2 (i rownolegle P0.12) | [Z] plyta 2026-08-30 |
-| Pomiar baterii | SAADC AIN2 (gain 1/6, ref 0.6V, FS 3.6V), srednia 4x, kalibracja offsetu przy boocie; ramka `22 04` + flags bit3 (od 0.2.0) | [Z] FW; skala DO KALIBRACJI |
+| Zasilanie | CR2032 3V, bez LDO — bezposrednio na VDD (pin 9); przez diode do dzielnika **100k/100k** -> wylot na P0.04/AIN2 i P0.12 (oba piny wylacznie dzielnik) | [Z] plyta 2026-08-30 |
+| Pomiar baterii | SAADC AIN2 (gain 1/6, ref 0.6V, FS 3.6V), srednia 4x, kalibracja offsetu przy boocie; ramka `22 04` + flags bit3 (od 0.2.0); ratio 1:1 potwierdzony, **OFFSET = Vf diody DO KALIBRACJI** | [Z] FW; Vf pending |
 
 ### Pinout uzywany przez FW
 | Pin | Funkcja | Konfiguracja |
@@ -27,7 +27,8 @@
 | P0.05 | I2C SDA (bit-bang) | open-drain S0D1 + pullup wew. |
 | P0.06 | I2C SCL (bit-bang) | open-drain S0D1 + pullup wew. |
 | P0.09 | LSM INT1 | input NOPULL (nieuzywany w strategii poll; wyjscie na przyszly FIFO/DRDY) |
-| P0.04 | SAADC AIN2 — wylot dzielnika baterii (CR2032 przez diode); node rowniez na P0.12 (kolizja z CS MX25R przy F6) | SAADC od 0.2.0 |
+| P0.04 | SAADC AIN2 — wylot dzielnika baterii (CR2032 przez diode, 100k/100k); node rowniez na P0.12 | SAADC od 0.2.0 |
+| P0.12 | wylot dzielnika baterii (drugi pin node; wylacznie dzielnik — NIE CS flasha) | nieuzywany przez FW |
 | P0.25 | BTN do GND | input PULLUP, active-low; sense dla wybudzenia z SYSTEMOFF |
 | P0.28 | LED | output, active-low |
 
@@ -124,10 +125,13 @@ Zadanie: RX `20 17` (1 zadanie = 1 ramka); FW cache'uje pomiar z ticku 1s (fallb
 flags v2 (ramka 19B): bit3 = low-battery (< 2400 mV); bity 0-2 = VBT bez zmian.
 ```
 
-- Skala node->Vbat: `TRIKIG_BATT_SCALE_NUM/DEN` + `OFFSET_MV` (Vf diody) w trikig_batt.h —
-  **DO KALIBRACJI multimetrem na egzemplarzu** (kryterium F5: ±50 mV vs miernik). Wartosci
-  startowe zakladaja dzielnik 1:1 bez kompensacji Vf.
-- Pomiar = Vbat minus Vf diody (temp. zależna — walidacja przy pełnym zakresie SOC).
+- Skala node->Vbat: `SCALE_NUM=2, DEN=1` (dzielnik 100k/100k = 1:1, potwierdzony plyta
+  2026-08-30) + `OFFSET_MV` (Vf diody) w trikig_batt.h.
+- **DO KALIBRACJI: tylko Vf** — porownaj FW `22 04` (= 2x node) z miernikiem na baterii:
+  `OFFSET_MV = Vbat_true − FW_mv` (kryterium F5: ±50 mV). Punkt roboczy ~12 µA przez dzielnik
+  (200k): Vf ≈ 0.5-0.55V (Si) / 0.15-0.25V (Schottky); dryf Vf z temperatura — walidacja
+  przy pelnym zakresie SOC.
+- Pobor dzielnika: (Vbat−Vf)/200k ≈ 10-12 µA ciagle (~2 mAh/rok) — pomijalne vs CR2032.
 
 ---
 
@@ -193,7 +197,7 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 
 1. Duplikaty probek (timer 9ms vs ODR 104Hz) — do decyzji: 10ms/dryf albo INT1 DRDY [O-013 pkt 3].
 2. Brak backpressure: NRF_ERROR_RESOURCES = drop ramki (brak buforowania na conn interval) [O-013 pkt 2].
-3. Pomiar baterii — ZROBIONE 0.2.0 (SAADC AIN2, ramka `22 04` na `20 17`, flags bit3); kalibracja skali (ratio+Vf) na egzemplarzu pending.
+3. Pomiar baterii — ZROBIONE 0.2.0 (SAADC AIN2, dzielnik 100k/100k potwierdzony, ramka `22 04` na `20 17`, flags bit3); OFFSET Vf na egzemplarzu pending.
 4. Brak watchdog — ZROBIONE v0.0.27 (WDT 12s, covers boot).
 5. BB I2C ~250kHz = CPU-heavy burst (12B @104Hz — OK, ale bez DMA).
 6. TWIM i FIFO nie dzialaja na tym sprzecie bez diagnozy LA [O-013 pkt 8, AN4650].
