@@ -9,3 +9,4 @@ build.log
 # hexy sa build-artefaktami; release hexy wersjonujemy recznie w firmware/hex/
 *.hex
 !firmware/hex/*.hex
+tools/vbt_offline/vbt_offline
