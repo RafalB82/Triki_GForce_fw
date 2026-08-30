@@ -49,17 +49,23 @@ _Static_assert(TRIKIG_VBT_V_CLAMP <= 0x7FFF,
                                               * inaczej nie wystartuje nigdy) */
 #define TRIKIG_VBT_GYR_Q16_RAD_LSB 80      /* gyro->q16.16 rad/s @FS 2000dps:
                                               * 70 mdps/LSB * pi/180 * 2^16 = 80.07 */
-#define TRIKIG_VBT_GYR_REST_DPS    2       /* korekcja g aktywna gdy |w| < 2 dps I innowacja
-                                              * < G_CORR_MAX (quasi-statyka: kasuje gyro-bias;
-                                              * przy rotacji propagacja jest dokladna, a korekcja
-                                              * ciagnela g ku opoznionemu LPF(acc) => pozorny
-                                              * lin — zlapano w C6) */
+#define TRIKIG_VBT_GYR_REST_DPS    15      /* korekcja g aktywna gdy |w| < 15 dps I innowacja
+                                              * < G_CORR_MAX. 2 dps bylo martwaca: bias zyroskopu
+                                              * (spec LSM6DSL do ±5 dps) sam zamykal gate => korekcja
+                                              * nigdy => gest rotuje z biasem => rampa velocity do
+                                              * clampa (log RTT 0.3.3, repro: harness scenario bias).
+                                              * Cel korekcji = RAW acc => lag-rotacja nie dotyczy;
+                                              * 15 dps blokuje nadal szybka rotacje (45 dps). */
 #define TRIKIG_VBT_GYR_REST_TH_Q16 (TRIKIG_VBT_GYR_REST_DPS * 1144)  /* 1 dps ~ 1144 q16.16 rad/s */
 #define TRIKIG_VBT_G_CORR_MAX      256u    /* max ||acc-g_est|| dla korekcji [q8.8 = 1.0 m/s^2]:
                                               * gate innowacji — korekcja NIE moze zalezec od
                                               * s_rest (dead-lock: blad g => "moving" => korekcja
                                               * nigdy => permanentny falszywy ruch; C6), ani ruszac
                                               * podczas pusha (absorpcja ruchu => bounce po repie) */
+#define TRIKIG_VBT_G_LEAK_SHIFT    11      /* powolny leak korekcji 1/2048 ZAWSZE (audyt HW 0.3.3):
+                                              * net przeciw permanentnemu dead-lockowi gdy innowacja
+                                              * > G_CORR_MAX trwale (duzy blad g, np. forced-snap w
+                                              * ruchu): ~20s powrotu, po czym szybka korekcja wchodzi */
 #define TRIKIG_VBT_DT_104HZ_Q16    630u    /* 1/104 s w q16.16 (=630.15); C5: dt=1/ODR,
                                               * wyprostowane z 629 (err 0.16%) */
 #define TRIKIG_VBT_AXIS_Q12        4096u   /* wektor osi ruchu: q12, |axis| = 4096 */

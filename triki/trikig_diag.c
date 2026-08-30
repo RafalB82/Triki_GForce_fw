@@ -10,9 +10,13 @@ trikig_diag_t g_diag;
 
 void diag_init(void)
 {
-    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    DWT->CYCCNT = 0;
-    DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+    /* TIMER1 @1MHz, 16-bit (nRF52810: brak DWT CYCCNT — patrz trikig_diag.h).
+     * TIMER0 zajety przez SoftDevice; TIMER1 wolny (app_timer uzywa RTC1). */
+    NRF_TIMER1->MODE      = TIMER_MODE_MODE_Timer;
+    NRF_TIMER1->BITMODE   = TIMER_BITMODE_BITMODE_16Bit;
+    NRF_TIMER1->PRESCALER = 4;                   /* 16MHz / 2^4 = 1MHz => 1 tick = 1us */
+    NRF_TIMER1->TASKS_CLEAR = 1;
+    NRF_TIMER1->TASKS_START = 1;
 }
 
 void diag_period_us(uint16_t us)

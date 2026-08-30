@@ -38,6 +38,13 @@
  * v0.3.3 (walidacja HW baterii): pierwsza rzeczywista lektura — FW 6595mV @ skala 2/1 vs
  * real 3.3080V => AIN2/P0.04 = Vbat BEZ dzielnika 2x; SCALE 1/1; skala 2/1 byla zlego
  * punktu (P0.04 != P0.12; potwierdza tez WHO_AM_I=0x6A => SA0 wysoki). Dokladnosc ~0.3%.
+ * v0.3.4 (log RTT 0.3.3): (1) DWT->CYCCNT NIE ISTNIEJE na nRF52810 — wszystkie timingi
+ * diag=0 i watchdog DRDY martwy; timebase -> TIMER1 @1MHz 16-bit (wrap-safe uint16, okno
+ * 65.5ms), detekcja gapow -> RTC1 (>60ms => twardy ZUPT). (2) rampa velocity do clampa
+ * przy lezacym urzadzeniu: gyro bias ~3dps > stary gate |w|<2dps => korekcja trwale
+ * zamknieta => gest rotuje z biasem (repro: harness scenario bias); gate 2->15 dps +
+ * powolny leak korekcji 1/2048 zawsze. (3) bdrop=104/s => telemetria pierwszego bledu
+ * ble send (8 = INVALID_STATE: klient bez subskrypcji CCCD).
  */
 #include <stdint.h>
 #include <stdbool.h>
@@ -93,7 +100,8 @@
 #define DRDY_TS_SLOTS           4u          /* FIFO timestampow ISR -> main */
 #define DT_MIN_US               4000u       /* clamp dt (P3): < 250 Hz nie zdarzy sie przy 104 ODR */
 #define DT_MAX_US               40000u      /* > 25 Hz = probka zgubiona */
-#define DT_GAP_US               100000u     /* > 100ms przerwy => twardy ZUPT + nominalny dt */
+#define DT_GAP_TICKS            1966u       /* gap > 60ms (1966x30.5us RTC1) => twardy ZUPT;
+                                             * 60ms zamiast 100ms: timebase TIMER1 16-bit wrap 65.5ms */
 #define IMU_ODR_HZ              104u        /* dzielnik logu diag ~1s; zmiana ODR => popraw tu (F2) */
 
 BLE_NUS_DEF(m_nus, NRF_SDH_BLE_TOTAL_LINK_COUNT);
@@ -189,7 +197,9 @@ APP_TIMER_DEF(m_poll_timer);
 static volatile uint32_t s_drdy_ts[DRDY_TS_SLOTS];   /* FIFO timestampow (ISR pisze, main czyta) */
 static volatile uint8_t  s_drdy_wr = 0, s_drdy_rd = 0;
 static volatile uint8_t  s_fallback_req = 0;         /* zadania watchdog/poll -> main (single-producer) */
-static uint32_t s_last_sample_cyc = 0;               /* DWT ostatniej probki (watchdog DRDY) */
+static uint32_t s_last_sample_cyc = 0;               /* TIMER1 us @ ostatniej probki (watchdog DRDY) */
+static uint32_t s_last_rtc = 0;                      /* RTC1 tick @ ostatniej probki (detekcja gapow > 65.5ms okna TIMER1) */
+static bool     s_rtc_valid = false;
 static uint32_t s_prev_ts_cyc = 0;                   /* C7: poprzedni timestamp (dt) */
 static bool     s_prev_ts_valid = false;
 
@@ -199,7 +209,7 @@ static void drdy_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action)
     uint8_t wr = s_drdy_wr;
     uint8_t next = (uint8_t)((wr + 1) % DRDY_TS_SLOTS);
     if (next != s_drdy_rd) {
-        s_drdy_ts[wr] = DWT->CYCCNT;                 /* timestamp = czas DRDY (nie odczytu) */
+        s_drdy_ts[wr] = diag_cyc();                  /* [us] timestamp = czas DRDY (nie odczytu) */
         s_drdy_wr = next;
     }                                                /* pelne FIFO: drop (main opozniony; watchdog pokryje) */
 }
@@ -257,15 +267,26 @@ static void process_sample(uint32_t ts_cyc, bool ts_valid)
     /* C7: dt = t[n]-t[n-1] z timestampow DRDY; clamp min/max + dt_fault; gap > 100ms
      * => twardy ZUPT (reset integratora) i dt nominalny. */
     uint16_t dt_q16 = TRIKIG_VBT_DT_104HZ_Q16;
+
+    /* detekcja gapow: RTC1 (app_timer, 30.5us/tick, wrap 512s) — niezalezna od 16-bit
+     * okna TIMER1; gap => twardy ZUPT + dt nominalny (przegapiona probka nie wchodzi). */
+    uint32_t now_rtc = NRF_RTC1->COUNTER;
+    if (s_rtc_valid) {
+        uint32_t rtc_diff = (now_rtc - s_last_rtc) & 0xFFFFFFu;
+        if (rtc_diff > DT_GAP_TICKS) {
+            g_diag.dt_faults++;
+            vbt_reset_velocity();
+            s_prev_ts_valid = false;             /* dt z timer-ow po gapie nie liczy sie */
+        }
+    }
+    s_last_rtc = now_rtc;
+    s_rtc_valid = true;
+
     if (ts_valid && g_diag.drdy_mode != 0) {
         if (s_prev_ts_valid) {
-            uint32_t dt_us = (ts_cyc - s_prev_ts_cyc) >> 6;
+            uint32_t dt_us = (uint16_t)(ts_cyc - s_prev_ts_cyc);   /* wrap-safe (okno 65.5ms) */
             diag_period_us(dt_us);               /* min/avg/max okresu probkowania */
-            if (dt_us > DT_GAP_US) {
-                g_diag.dt_faults++;
-                vbt_reset_velocity();
-                dt_us = (TRIKIG_VBT_DT_104HZ_Q16 * 1000000u) >> 16;   /* nominalny */
-            } else if (dt_us < DT_MIN_US || dt_us > DT_MAX_US) {
+            if (dt_us < DT_MIN_US || dt_us > DT_MAX_US) {
                 g_diag.dt_faults++;
                 dt_us = (dt_us < DT_MIN_US) ? DT_MIN_US : DT_MAX_US;
             }
@@ -310,7 +331,7 @@ static void poll_timeout_handler(void * p_context)
 
     if (g_diag.drdy_mode == 0) {
         if (s_fallback_req < 255) s_fallback_req++;      /* tryb polling: probka co tick */
-    } else if ((uint32_t)(diag_cyc() - s_last_sample_cyc) > (uint32_t)(30000u << 6)) {
+    } else if ((uint16_t)(diag_cyc() - s_last_sample_cyc) > 30000u) {   /* 30ms, wrap-safe */
         if (s_fallback_req < 255) s_fallback_req++;      /* watchdog: DRDY milczy > 30ms */
     }
 }
@@ -480,7 +501,7 @@ int main(void)
     nrf_drv_wdt_enable();
 
     rtt_diag_printf("S1 main enter " TRIKIG_FW_TAG);
-    diag_init();                                 /* C1: DWT CYCCNT (timingi acq/dsp/ble + okres probki) */
+    diag_init();                                 /* C1: TIMER1 @1MHz (DWT CYCCNT brak na 52810!) */
     led_blink(1, 40, 80);
     nrf_delay_ms(700);
 
@@ -648,7 +669,14 @@ int main(void)
                     /* SDK ble_nus_data_send przyjmuje uint8_t* (API bez const); funkcja nie modyfikuje bufora. */
                     uint32_t err = ble_nus_data_send(&m_nus, (uint8_t *)p_tx, &hvx, m_conn_handle);
                     diag_max16(&g_diag.ble_us_max, diag_cyc_us(diag_cyc() - t1));   /* C1 */
-                    if (err != NRF_SUCCESS) g_diag.ble_drops++;                     /* C1: drop send-path */
+                    if (err != NRF_SUCCESS) {
+                        g_diag.ble_drops++;                             /* C1: drop send-path */
+                        static uint32_t s_ble_err_first = 0;            /* audyt: 100% bdrop w logu 0.3.3 */
+                        if (s_ble_err_first == 0) {
+                            s_ble_err_first = err;
+                            rtt_diag_printf("BLE send err=0x%x (8=INVALID_STATE: brak CCCD)", err);
+                        }
+                    }
                 }
             }
             ring_rd = (uint8_t)((ring_rd + 1) % RING_SLOTS);

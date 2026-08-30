@@ -155,11 +155,11 @@ void vbt_on_frame(const uint8_t *raw12, uint16_t dt_q16)
         s_gest[1] -= (int32_t)((cy * (int64_t)dt_q16 + ((int64_t)1 << 31)) >> 32);
         s_gest[2] -= (int32_t)((cz * (int64_t)dt_q16 + ((int64_t)1 << 31)) >> 32);
 
-        /* 2. korekcja ACC: gate |w| < 2 dps (rotacja => ufa gyro) I innowacja
-         *    ||acc-g|| < 1.0 m/s^2. Cel = RAW acc (nie LPF: brak lagu w petli). Bez gate
-         *    rest — dead-lock (blad g => "moving" => korekcja nigdy, C6); bez gate
-         *    innowacji — korekcja absorbala push (bounce po repie, C6).
-         *    P2: porownanie na KWADRACIE innowacji (bez isqrt — 1 sqrt mniej/ramke). */
+        /* 2. korekcja ACC: gate |w| < 15 dps (szybka rotacja => ufa gyro; BIAS zyroskopu
+         *    do 15 dps MUSI przepuszczac — 2 dps powodowalo rampę, patrz trikig_vbt.h)
+         *    I innowacja ||acc-g|| < 1.0 m/s^2. Cel = RAW acc (brak lagu w petli). Dodatkowo
+         *    powolny leak 1/2048 ZAWSZE (net przeciw permanentnemu dead-lockowi przy duzym
+         *    bledzie g — innowacja > 1.0 blokuje szybka sciezke, leak wyciaga stan). */
         int32_t dg[3] = { av[0] - s_gest[0], av[1] - s_gest[1], av[2] - s_gest[2] };
         int64_t pg = (int64_t)dg[0]*dg[0] + (int64_t)dg[1]*dg[1] + (int64_t)dg[2]*dg[2];
         if (abs(wq[0]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
@@ -169,6 +169,8 @@ void vbt_on_frame(const uint8_t *raw12, uint16_t dt_q16)
             for (int i = 0; i < 3; i++)
                 s_gest[i] += dg[i] >> TRIKIG_VBT_G_CORR_SHIFT;
         }
+        for (int i = 0; i < 3; i++)
+            s_gest[i] += dg[i] >> TRIKIG_VBT_G_LEAK_SHIFT;
 
         /* 3. renormalizacja do g_ref (Euler rozmywa norme, kwantyzacja tez) */
         int64_t p = (int64_t)s_gest[0]*s_gest[0] + (int64_t)s_gest[1]*s_gest[1] + (int64_t)s_gest[2]*s_gest[2];

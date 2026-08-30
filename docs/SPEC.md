@@ -63,12 +63,13 @@ INT1 DRDY (LSM6DSL INT1_CTRL=DRDY_XL) -> GPIOTE ISR (timestamp DWT)
   przy boocie (rising -> falling, zliczanie krawedzi w 100ms, ~10 @104Hz) — dziala bez LA;
   brak krawedzi => fallback polling 9ms (app_timer) + watchdog runtime (brak probki > 30ms
   => odczyt zapasowy, licznik `drdy_fallbacks`).
-- **dt = t[n]-t[n-1]** z timestampow DRDY (DWT, HFCLK); clamp 4-40ms (`dt_faults`), gap
-  > 100ms => twardy ZUPT + dt nominalny; diag: `dt min/avg/max us`.
+- **dt = t[n]-t[n-1]** z timestampow DRDY (TIMER1 @1MHz — **DWT->CYCCNT nie istnieje na nRF52810**); clamp 4-40ms (`dt_faults`), gap > 60ms (RTC1) => twardy ZUPT + dt nominalny; diag: `dt min/avg/max us`.
 - **memcmp dup-guard = wylacznie diagnostyka** w trybie DRDY (probke identyfikuje DRDY,
   P0 audyt 2026-08-30); w trybie polling duplikat nadal nie wchodzi do calkowania.
 - **I2C**: TWIM0 @400kHz (DMA, ~40us, ~0 CPU) z fallbackiem bit-bang (init, bus-clear,
-  fault-recovery, licznik `twim_faults`).
+  fault-recovery, licznik `twim_faults`, ban po 3 faultach z rzedu).
+- **Timebase pomiarow**: TIMER1 @1MHz 16-bit (wrap-safe uint16, okno 65.5ms); gap-detect z RTC1.
+  DWT->CYCCNT NIE istnieje na nRF52810 (0.3.3: wszystkie timingi = 0).
 
 ---
 
@@ -191,7 +192,7 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 | Element | Detal |
 |---|---|
 | Wejscie | gyro+acc 12B z OUT 0x22, odczyt w main loop wyzwalany DRDY (INT1 -> GPIOTE, timestamp w ISR); TWIM 400kHz + fallback bb; dt = t[n]-t[n-1] (clamp 4-40ms, `dt_faults`, gap>100ms => twardy ZUPT); fallback polling 9ms |
-| Model | gravity estimator (filtr komplementarny): propagacja gyro `dg = -(w x g)*dt` co ramke (q16.16 x q8.8, zaokraglana), korekcja ACC gated (|w| < 2 dps I innowacja < 1.0 m/s^2), renormalizacja do g; `lin = LPF(acc - g_est)` (JEDNO LPF na roznicy); `a_move = dot(lin, axis)`; `v += a_move*dt`; os ruchu default X barbell (vbt_set_axis) |
+| Model | gravity estimator (filtr komplementarny): propagacja gyro `dg = -(w x g)*dt` co ramke (q16.16 x q8.8, zaokraglana), korekcja ACC gated (**|w| < 15 dps** — gate NIE moze byc ponizej spec biasu gyro ±5 dps; 0.3.4 lekcja z loga: bias 3dps > gate 2dps => rampa do clampa — repro `tools/vbt_offline bias`) I innowacja < 1.0 m/s^2 + powolny leak 1/2048 zawsze (net dead-lockow), renormalizacja do g; `lin = LPF(acc - g_est)` (JEDNO LPF na roznicy); `a_move = dot(lin, axis)`; `v += a_move*dt`; os ruchu default X barbell (vbt_set_axis) |
 | Bezruch | `||lin|| < 0.3 m/s^2` przez 8 ramek — detektor 1. rzedu (stara norma \|\|a\|-g\| byla 2. rzedu: dev ~ a^2/2g, slepa na wolne pushy); fallback: wymuszona kalibracja g z LPF po ~5s bez bezruchu (TRIKIG_VBT_BIAS_FORCE_FRAMES) |
 | ZUPT | decay 1/32/ramke przy bezruchu (tau ~0.31s) z min-krokiem 1 q8.8 (decay stenal przy \|v\| < 125 mm/s) |
 | Progi | clamp v 15.6 m/s; clamp normy (audyt 2026-08-30) |
@@ -214,6 +215,8 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 7. INT1 polaryzacja — wdrozona samowalidacja runtime 0.3.1 (auto-probe rising/falling + fallback polling; polaryzacja widoczna w RTT `drdy=`). Long-term: potwierdzić na LA i zastąpić auto-probe stałą (dług HW, audyt C).
 10. TWIM vs D-016 (audyt A): D-016 (bb_i2c.h) mówił "TWIM0 nie działa na tym sprzęcie" — C8 przywraca TWIM z fallbackiem bb i banem po 3 faultach z rzędu. ROZSTRZYZGA flash v0.3.2: `twim_faults`=0 → D-016 nieaktualne; `twi` rośnie i RTT pokaże "TWIM banned" → żyjemy z bb. Do weryfikacji PRZED produkcją.
 11. SAADC fail był cichy (audyt F/G) — od 0.3.2 licznik `sadc` w diag + guard sum==0; OFFSET_MV nadal = 0 (DO KALIBRACJI na egzemplarzu, SPEC 5.2).
+12. `bdrop` = 100% w logu 0.3.3 => prawdopodobnie klient bez subskrypcji CCCD (NRF_ERROR_INVALID_STATE); od 0.3.4 FW loguje kod pierwszego bledu (`BLE send err=0x..`, 8 = INVALID_STATE). Do potwierdzenia z subskrypcja PWA — bdrop ma byc ~0 przy streamie.
+13. DWT->CYCCNT nie istnieje na nRF52810 — czas: TIMER1 @1MHz; watchdog DRDY 30ms i dt znów zywe od 0.3.4.
 8. m_stream_on zawsze true po starcie (init-komenda tylko potwierdza).
 9. v21/v22 bez logow PWA i testow terenowych (produkcja pozostaje v19; v21 boot zielony).
 

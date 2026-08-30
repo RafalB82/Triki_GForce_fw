@@ -219,6 +219,25 @@ static void scenario_rep_soft(void)
     printf("   %s\n", ok ? "PASS" : "FAIL");
 }
 
+/* audyt HW 2026-08-30 (log RTT): gyro bias > 2 dps => stary gate |w|<2dps trwale
+ * zamkniety => gest rotuje z bias-em => innowacja > 1.0 => dead-lock => rampa do clampa.
+ * Urzadzenie LEZY; bias zyroskopu 3 dps (realny wg spec LSM6DSL: max ±5 dps). */
+static void scenario_bias(void)
+{
+    printf("== bias: 12s bezruchu, gyro bias +3 dps wokol Y (gate |w|<2dps nie moze blokowac korekcji) ==\n");
+    vbt_reset(); old_reset();
+    double vmax = 0;
+    for (int f = 0; f < 12 * 104; f++) {
+        pack_acc(0, 0, G);
+        pack_gyr(0, 3.0, 0);                 /* bias 3 dps wokol Y (pitch — leje sie na os X) */
+        feed();
+        double vn = fabs((double)vbt_velocity_mms());
+        if (vn > vmax) vmax = vn;
+    }
+    printf("   max|v_new| = %.1f mm/s (limit 150) | max|v_old| = %.1f mm/s\n", vmax, fabs(s_v_old_mm));
+    printf("   %s\n", vmax < 150.0 ? "PASS" : "FAIL");
+}
+
 static int scenario_stdin(void)
 {
     printf("== stdin: raw12 per frame, CTRL-D konczy ==\n");
@@ -244,6 +263,7 @@ int main(int argc, char **argv)
     if (!strcmp(sc, "rot_move"))  { scenario_rot(1); return 0; }
     if (!strcmp(sc, "rep"))       { scenario_rep(); return 0; }
     if (!strcmp(sc, "rep_soft"))  { scenario_rep_soft(); return 0; }
+    if (!strcmp(sc, "bias"))      { scenario_bias(); return 0; }
     if (!strcmp(sc, "stdin"))     return scenario_stdin();
     if (!strcmp(sc, "all")) {
         scenario_rest60();
@@ -251,8 +271,9 @@ int main(int argc, char **argv)
         scenario_rot(1);
         scenario_rep();
         scenario_rep_soft();
+        scenario_bias();
         return 0;
     }
-    fprintf(stderr, "uzycie: %s [rest60|rot|rot_move|rep|rep_soft|stdin|all]\n", argv[0]);
+    fprintf(stderr, "uzycie: %s [rest60|rot|rot_move|rep|rep_soft|bias|stdin|all]\n", argv[0]);
     return 1;
 }

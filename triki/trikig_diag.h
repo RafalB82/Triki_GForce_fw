@@ -21,7 +21,7 @@ typedef struct {
     uint32_t ring_drops;     /* drop ramki BLE: pelny ring (K4: seq juz poszedl) */
     uint32_t seq_gaps;       /* dziury w seq widziane przy konsumpcji ringu (main) */
     uint32_t ble_drops;      /* ble_nus_data_send != NRF_SUCCESS (main) */
-    uint32_t dt_faults;      /* dt poza clampem lub gap > 100ms (C7) */
+    uint32_t dt_faults;      /* dt poza clampem lub gap > 60ms (C7) */
     uint32_t drdy_fallbacks; /* odczyty watchdogiem poll-timera zamiast DRDY (C7) */
     uint32_t twim_faults;    /* bledy TWIM -> fallback bit-bang (C8) */
     uint32_t saadc_faults;   /* nieudane konwersje SAADC baterii (audyt F/G; producent:
@@ -41,10 +41,18 @@ typedef struct {
 
 extern trikig_diag_t g_diag;
 
-void diag_init(void);         /* DWT CYCCNT on (TRCENA + CYCCNTENA) */
+/* Timebase: TIMER1 @1MHz (16-bit, wrap 65.5ms — wszystkie mierzone okna < 65.5ms;
+ * wrap-safe przez arytmetyke uint16: (uint16_t)(now - t0)).
+ * UWAGA (log RTT 0.3.3): DWT->CYCCNT NIE ISTNIEJE na nRF52810 (obciety M4) — wszystkie
+ * pomiary dawaly 0. Nie uzywac DWT do pomiarow na 52810/52811. */
+void diag_init(void);         /* TIMER1 start @1MHz */
 
-static inline uint32_t diag_cyc(void) { return DWT->CYCCNT; }
-static inline uint16_t diag_cyc_us(uint32_t cycles) { return (uint16_t)(cycles >> 6); }   /* 64MHz */
+static inline uint32_t diag_cyc(void)                 /* [us], capture -> CC[0] */
+{
+    NRF_TIMER1->TASKS_CAPTURE[0] = 1;
+    return NRF_TIMER1->CC[0];
+}
+static inline uint16_t diag_cyc_us(uint32_t diff_cyc) { return (uint16_t)diff_cyc; }
 
 /* okres swiezej probki: min/max + EMA (init EMA pierwsza probka) */
 void diag_period_us(uint16_t us);

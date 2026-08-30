@@ -7,8 +7,8 @@
 
 #define TRIKIG_FW_MAJOR   0
 #define TRIKIG_FW_MINOR   3
-#define TRIKIG_FW_PATCH   3
-#define TRIKIG_FW_VERSION "0.3.3"
+#define TRIKIG_FW_PATCH   4
+#define TRIKIG_FW_VERSION "0.3.4"
 #define TRIKIG_FW_TAG     "v" TRIKIG_FW_VERSION
 
 #endif /* TRIKIG_VERSION_H */
