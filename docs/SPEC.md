@@ -18,7 +18,7 @@
 | Flash zewn. | MX25R8035F 1MB SPI — NIE uzywany; CS **NIE jest na P0.12** (P0.12 = dzielnik baterii, zweryfikowane plyta 2026-08-30); CS/SCK/MOSI/MISO nieznane | [?] piny ze schematu |
 | Kryształ 32k | BRAK -> LFCLK = RC wewnetrzny (SRC=0, CTIV=16) | [Z] |
 | Debug | SWD pady (3V3/GND/nRESET/SWDIO/SWCLK), probe: Tigard/Win11 lub Pico+Free-DAP; RTT ch0 | [Z] |
-| Zasilanie | CR2032 3V, bez LDO — bezposrednio na VDD (pin 9); diode + rezystory do node'a baterii — **POMIAR FW 0.3.3: AIN2/P0.04 widzi ~pelne Vbat (dzielnika 2× na tej sciezce NIE ma)**; rola P0.12 do potwierdzenia miernikiem | [P] FW 0.3.3: 6595mV @ skala 2 vs real 3.308V |
+| Zasilanie | CR2032 3V, bez LDO — bezposrednio na VDD (pin 9); diode + rezystory do node'a baterii — **AIN2/P0.04 = ~pelne Vbat (bez dzielnika 2×)**; rola P0.12 do potwierdzenia miernikiem | [P] FW 0.3.3/0.3.4: 6595mV @ skala 2, po korekcie 3310mV vs real 3308mV (Δ2mV) |
 | Pomiar baterii | SAADC AIN2 (gain 1/6, ref 0.6V, FS 3.6V), srednia 4x, kalibracja offsetu przy boocie; ramka `22 04` + flags bit3 (od 0.2.0); ratio 1:1 potwierdzony, **OFFSET = Vf diody DO KALIBRACJI** | [Z] FW; Vf pending |
 
 ### Pinout uzywany przez FW
@@ -212,7 +212,7 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 4. Brak watchdog — ZROBIONE v0.0.27 (WDT 12s, covers boot).
 5. BB I2C CPU-heavy — ZROBIONE 0.3.1 dla path danych (TWIM 400kHz + DMA; bb zostaje dla init/bus-clear/fault-recovery).
 6. FIFO LSM6DSL — ODROCZONE do decyzji ODR >104 Hz (przy 104Hz DRDY+ring16 wystarcza; bez LA bitfields FIFO niezweryfikowane [AN4650, D-016]).
-7. INT1 polaryzacja — wdrozona samowalidacja runtime 0.3.1 (auto-probe rising/falling + fallback polling; polaryzacja widoczna w RTT `drdy=`). Long-term: potwierdzić na LA i zastąpić auto-probe stałą (dług HW, audyt C).
+7. INT1 — **otwarte [HW]**: probe nie widzi krawedzi na P0.09 w zadnej polaryzacji (log 0.3.3/0.3.4: `drdy=0`) => DRDY prawdopodobnie NIE jest na P0.09 (SPEC 1 [?]). Fallback polling dziala (98 smpl/s, dup-guard). Do zrobienia: zmierzyc miernikiem/LA gdzie fizycznie jest DRDY -> poprawic PIN_IMU_INT1 lub notke -> probe zamieni sie w stala polaryzacje.
 10. TWIM vs D-016 (audyt A): D-016 (bb_i2c.h) mówił "TWIM0 nie działa na tym sprzęcie" — C8 przywraca TWIM z fallbackiem bb i banem po 3 faultach z rzędu. ROZSTRZYZGA flash v0.3.2: `twim_faults`=0 → D-016 nieaktualne; `twi` rośnie i RTT pokaże "TWIM banned" → żyjemy z bb. Do weryfikacji PRZED produkcją.
 11. SAADC fail był cichy (audyt F/G) — od 0.3.2 licznik `sadc` w diag + guard sum==0; OFFSET_MV nadal = 0 (DO KALIBRACJI na egzemplarzu, SPEC 5.2).
 12. `bdrop` = 100% w logu 0.3.3 => prawdopodobnie klient bez subskrypcji CCCD (NRF_ERROR_INVALID_STATE); od 0.3.4 FW loguje kod pierwszego bledu (`BLE send err=0x..`, 8 = INVALID_STATE). Do potwierdzenia z subskrypcja PWA — bdrop ma byc ~0 przy streamie.
