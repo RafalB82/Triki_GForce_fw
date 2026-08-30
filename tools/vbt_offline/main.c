@@ -244,8 +244,11 @@ static int scenario_stdin(void)
     vbt_reset(); old_reset();
     uint8_t raw12[12];
     long n = 0;
+    /* UWAGA: NIE przez feed() — ten buduje ramke ze statycznych gyr_raw/acc_raw
+     * (zera); stdin idzie 1:1 do vbt_on_frame (audyt: replay zer przez 0.3.4). */
     while (fread(raw12, 1, 12, stdin) == 12) {
-        feed();
+        vbt_on_frame(raw12, DT_Q16);
+        s_v_old_mm = old_model_step(raw12);
         printf("%ld;%.0f;%.0f;%u\n", n, (double)vbt_velocity_mms(),
                s_v_old_mm, (unsigned)vbt_flags());
         n++;
