@@ -219,6 +219,27 @@ static void scenario_rep_soft(void)
     printf("   %s\n", ok ? "PASS" : "FAIL");
 }
 
+/* regresja 0.3.7 (log 22:22): nauka biasu w quasi-bezruchu pochlonela WOLNA ROTACJE
+ * (10 dps < gate 15dps) => wbias zatruty => propagacja nadrabia w zla strone => rampa.
+ * Scenariusz: rest -> wolna rotacja 10 dps o Y (6s) -> rest. */
+static void scenario_slowrot(void)
+{
+    printf("== slowrot: 2s rest, wolna rotacja 10 dps o Y (6s), rest 6s ==\n");
+    vbt_reset(); old_reset();
+    double vmax = 0;
+    for (int f = 0; f < 14 * 104; f++) {
+        double t = f * DT_S;
+        double th = (t > 2.0 && t < 8.0) ? (10.0 / 180.0 * M_PI) * (t - 2.0) : ((t >= 8.0) ? 10.0/180.0*M_PI*6.0 : 0.0);
+        pack_acc(-G * sin(th), 0, G * cos(th));
+        pack_gyr(0, (t > 2.0 && t < 8.0) ? 10.0 : 0.0, 0);
+        feed();
+        double vn = fabs((double)vbt_velocity_mms());
+        if (vn > vmax) vmax = vn;
+    }
+    printf("   max|v_new| = %.1f mm/s (limit 300) | max|v_old| = %.1f mm/s\n", vmax, fabs(s_v_old_mm));
+    printf("   %s\n", vmax < 300.0 ? "PASS" : "FAIL");
+}
+
 /* audyt HW 2026-08-30 (log RTT): gyro bias > 2 dps => stary gate |w|<2dps trwale
  * zamkniety => gest rotuje z bias-em => innowacja > 1.0 => dead-lock => rampa do clampa.
  * Urzadzenie LEZY; bias zyroskopu 3 dps (realny wg spec LSM6DSL: max ±5 dps). */
@@ -267,6 +288,7 @@ int main(int argc, char **argv)
     if (!strcmp(sc, "rep"))       { scenario_rep(); return 0; }
     if (!strcmp(sc, "rep_soft"))  { scenario_rep_soft(); return 0; }
     if (!strcmp(sc, "bias"))      { scenario_bias(); return 0; }
+    if (!strcmp(sc, "slowrot"))   { scenario_slowrot(); return 0; }
     if (!strcmp(sc, "stdin"))     return scenario_stdin();
     if (!strcmp(sc, "all")) {
         scenario_rest60();
@@ -275,6 +297,7 @@ int main(int argc, char **argv)
         scenario_rep();
         scenario_rep_soft();
         scenario_bias();
+        scenario_slowrot();
         return 0;
     }
     fprintf(stderr, "uzycie: %s [rest60|rot|rot_move|rep|rep_soft|bias|stdin|all]\n", argv[0]);

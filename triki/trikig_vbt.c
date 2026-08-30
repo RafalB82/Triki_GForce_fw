@@ -204,15 +204,13 @@ void vbt_on_frame(const uint8_t *raw12, uint16_t dt_q16)
         }
         s_rest = (s_rest_cnt >= TRIKIG_VBT_REST_FRAMES);
 
-        /* 0.3.7: nauka biasu gyro w quasi-bezruchu (||lin|| < 1.2 m/s^2 i |w-wbias| <
-         * 15 dps => raw gyro = bias; tau ~0.6s). Bez tego dryf propagacji podtrzymywal
-         * blad g na progu gate'a innowacji => ZUPT nie gasil velocity przy ruchach. */
-        int64_t pq = (int64_t)TRIKIG_VBT_REST_TH * TRIKIG_VBT_REST_TH *
-                     TRIKIG_VBT_QUASI_REST_MULT * TRIKIG_VBT_QUASI_REST_MULT;
-        if (pl < pq &&
-            abs(we[0]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
-            abs(we[1]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
-            abs(we[2]) < TRIKIG_VBT_GYR_REST_TH_Q16) {
+        /* 0.3.7: nauka biasu gyro w bezruchu. 0.3.9: TYLKO przy pelnym rest I rezydualnej
+         * rotacji < 5 dps — przy quasi-rest nauka pochlaniala wolne rotacje (wbias zatruty
+         * => propagacja nadrabiala w zla strone => rampa; log 22:22, repro slowrot). */
+        if (s_rest && pl < (int64_t)TRIKIG_VBT_REST_TH * TRIKIG_VBT_REST_TH &&
+            abs(we[0]) < TRIKIG_VBT_WBIAS_LEARN_DPS * 1144 &&
+            abs(we[1]) < TRIKIG_VBT_WBIAS_LEARN_DPS * 1144 &&
+            abs(we[2]) < TRIKIG_VBT_WBIAS_LEARN_DPS * 1144) {
             for (int i = 0; i < 3; i++)
                 s_wbias[i] += (wq[i] - s_wbias[i]) >> TRIKIG_VBT_WBIAS_LEARN_SHIFT;
         }

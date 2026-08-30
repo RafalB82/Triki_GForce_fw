@@ -66,7 +66,10 @@ _Static_assert(TRIKIG_VBT_V_CLAMP <= 0x7FFF,
                                               * net przeciw permanentnemu dead-lockowi gdy innowacja
                                               * > G_CORR_MAX trwale (duzy blad g, np. forced-snap w
                                               * ruchu): ~20s powrotu, po czym szybka korekcja wchodzi */
-#define TRIKIG_VBT_WBIAS_LEARN_SHIFT 6     /* nauka biasu gyro w quasi-bezruchu (audyt HW 0.3.6):
+#define TRIKIG_VBT_WBIAS_LEARN_DPS  5      /* nauka biasu TYLKO przy |w-wbias| < 5 dps I pelnym
+                                              * rest (0.3.9: przy quasi-rest nauka pochlaniala
+                                              * wolne rotacje => wbias zatruty => rampa) */
+#define TRIKIG_VBT_WBIAS_LEARN_SHIFT 6     /* nauka biasu gyro w pelnym bezruchu (0.3.7/0.3.9):
                                               * 1/64 na ramke (tau ~0.6s); dryf propagacji z biasu
                                               * podtrzymuje blad g na progu gate'a => ||lin|| > prog
                                               * => ZUPT nie gasi velocity (raczeta przy ruchach) */

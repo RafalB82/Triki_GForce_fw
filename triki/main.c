@@ -41,6 +41,10 @@
  * v0.3.5: DRDY na INT2 (pin 9 ukladu wg datasheet ukladu — INT1 ukladu niepolaczony,
  * dlatego probe 0.3.3/0.3.4 nie widzial krawedzi); register INT2_CTRL (0x0E); probe
  * rozszerzona: pin P0.09/P0.10 x polaryzacja (drdy_mode 1-4).
+ * v0.3.9 (log wire v2 22:22): regresja 0.3.7 — nauka biasu w quasi-bezruchu pochlaniala
+ * wolne rotacje (<=15dps) => wbias zatruty => propagacja nadrabiala w zla strone => rampa
+ * do 15054; repro harness slowrot (FAIL przed, PASS po); nauka TYLKO przy pelnym rest I
+ * |w-wbias| < 5 dps.
  * v0.3.8: probe DRDY miala bug licznika — FIFO timestampow 4 sloty wypelnialo sie w
  * 100ms zanim licznik doszedl do progu 5 krawedzi => probe NIGDY nie miala szansy
  * przejsc (od 0.3.1; nakladalo sie na zly register INT1/INT2). Teraz: dedykowany
