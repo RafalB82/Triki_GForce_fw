@@ -87,6 +87,9 @@ void vbt_reset(void)
 
 void vbt_set_axis(const int16_t axis_q12[3])
 {
+    /* TODO (audyt E 2026-08-30): funkcja nie podlaczona do komendy RX — przy dodaniu
+     * ustawiania osi z hosta DODAC walidacje zakresu axis_q12 (obecnie: wektor zerowy
+     * odrzucany, reszta normalizowana; max int16*4096 miesci sie w int32 — OK). */
     int64_t p = (int64_t)axis_q12[0]*axis_q12[0] +
                 (int64_t)axis_q12[1]*axis_q12[1] +
                 (int64_t)axis_q12[2]*axis_q12[2];
