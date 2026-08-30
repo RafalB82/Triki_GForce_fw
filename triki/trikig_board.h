@@ -9,8 +9,8 @@
 
 #define PIN_LED            28u
 #define PIN_BTN            25u
-#define PIN_IMU_INT1       9u   /* kandydat: LSM INT2 (0.3.5 probe rozstrzyga) */
-#define PIN_IMU_INT2      10u   /* kandydat: LSM INT2 — "P0.09/P0.10 G-klasa INT" (SPEC 1) */
+#define PIN_IMU_INT1       9u   /* fallback kandydat (probe) */
+#define PIN_IMU_INT2      10u   /* **LSM INT2/DRDY -> P0.10** [P] potwierdzone plyta 2026-08-30 */
 #define LED_ACTIVE_LOW     1
 #define BTN_ACTIVE_LOW     1
 

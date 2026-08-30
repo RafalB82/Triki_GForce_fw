@@ -41,6 +41,7 @@
  * v0.3.5: DRDY na INT2 (pin 9 ukladu wg datasheet ukladu — INT1 ukladu niepolaczony,
  * dlatego probe 0.3.3/0.3.4 nie widzial krawedzi); register INT2_CTRL (0x0E); probe
  * rozszerzona: pin P0.09/P0.10 x polaryzacja (drdy_mode 1-4).
+ * v0.3.6: LSM INT2/DRDY -> P0.10 potwierdzone plyta [P] — probe probuje P0.10 pierwsza.
  * v0.3.4 (log RTT 0.3.3): (1) DWT->CYCCNT NIE ISTNIEJE na nRF52810 — wszystkie timingi
  * diag=0 i watchdog DRDY martwy; timebase -> TIMER1 @1MHz 16-bit (wrap-safe uint16, okno
  * 65.5ms), detekcja gapow -> RTC1 (>60ms => twardy ZUPT). (2) rampa velocity do clampa
@@ -222,7 +223,7 @@ static void drdy_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action)
  * Blokujace ~100ms na probe (max 400ms); zwraca true gdy DRDY zyje. */
 static bool drdy_probe(void)
 {
-    static const uint32_t pins[2] = { PIN_IMU_INT1, PIN_IMU_INT2 };
+    static const uint32_t pins[2] = { PIN_IMU_INT2, PIN_IMU_INT1 };   /* P0.10 potwierdzony [P] */
     static const nrf_gpiote_polarity_t pols[2] = { NRF_GPIOTE_POLARITY_LOTOHI,
                                                    NRF_GPIOTE_POLARITY_HITOLO };
     if (!lsm6dsl_drdy_enable(true)) return false;   /* I2C padl — polling tez nie zyje */
@@ -239,8 +240,8 @@ static bool drdy_probe(void)
             nrf_delay_ms(100);                       /* ~10 krawedzi @104Hz */
             uint8_t edges = (uint8_t)(s_drdy_wr - s_drdy_rd);
             if (edges >= 5) {
-                g_diag.drdy_mode = (uint8_t)(pi * 2 + pol + 1);   /* 1/2 = P0.09 rising/falling,
-                                                                     3/4 = P0.10 rising/falling */
+                g_diag.drdy_mode = (uint8_t)(pi * 2 + pol + 1);   /* 1/2 = P0.10 rising/falling
+                                                                     (potwierdzony), 3/4 = P0.09 r/f */
                 rtt_diag_printf("S2 DRDY ok pin=P0.%02u pol=%u edges=%u",
                                 pins[pi], pol, edges);
                 return true;
