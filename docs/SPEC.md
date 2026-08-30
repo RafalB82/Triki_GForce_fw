@@ -26,7 +26,7 @@
 |---|---|---|
 | P0.05 | I2C SDA (bit-bang) | open-drain S0D1 + pullup wew. |
 | P0.06 | I2C SCL (bit-bang) | open-drain S0D1 + pullup wew. |
-| P0.09 | LSM INT1 | input NOPULL (nieuzywany w strategii poll; wyjscie na przyszly FIFO/DRDY) |
+| P0.09 | kandydat LSM INT2 (pin 9 ukladu — **DRDY wg datasheet ukladu wychodzi na INT2**, nie INT1) | [P] datasheet ukladu; ktory pin nRF — probe 0.3.5 (drdy_mode 1-4) |
 | P0.04 | SAADC AIN2 — **Vbat (bez dzielnika 2×; pomiar FW 0.3.3)** | SAADC od 0.2.0, skala 1/1 od 0.3.3 |
 | P0.12 | prawdopodobny wylot dzielnika (drugie piete "node" z earlier notki — P0.04 i P0.12 to rozne node'y, rozwiazane pomiarem FW 0.3.3); wylacznie dzielnik — NIE CS flasha | nieuzywany przez FW |
 | P0.25 | BTN do GND | input PULLUP, active-low; sense dla wybudzenia z SYSTEMOFF |
@@ -212,7 +212,7 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 4. Brak watchdog — ZROBIONE v0.0.27 (WDT 12s, covers boot).
 5. BB I2C CPU-heavy — ZROBIONE 0.3.1 dla path danych (TWIM 400kHz + DMA; bb zostaje dla init/bus-clear/fault-recovery).
 6. FIFO LSM6DSL — ODROCZONE do decyzji ODR >104 Hz (przy 104Hz DRDY+ring16 wystarcza; bez LA bitfields FIFO niezweryfikowane [AN4650, D-016]).
-7. INT1 — **otwarte [HW]**: probe nie widzi krawedzi na P0.09 w zadnej polaryzacji (log 0.3.3/0.3.4: `drdy=0`) => DRDY prawdopodobnie NIE jest na P0.09 (SPEC 1 [?]). Fallback polling dziala (98 smpl/s, dup-guard). Do zrobienia: zmierzyc miernikiem/LA gdzie fizycznie jest DRDY -> poprawic PIN_IMU_INT1 lub notke -> probe zamieni sie w stala polaryzacje.
+7. INT1/DRDY — **ROZWIAZANE 0.3.5**: wg datasheet ukladu DRDY wychodzi na **INT2** (pin 9 ukladu), nie INT1 — FW 0.3.3/0.3.4 wlaczał DRDY na INT1_CTRL (0x0D) i dlatego probe nie widzial krawedzi. 0.3.5: INT2_CTRL (0x0E) + probe pin P0.09/P0.10 x polaryzacja; wynik w RTT (`S2 DRDY ok pin=P0.xx pol=y`) i `drdy_mode` 1-4.
 10. TWIM vs D-016 (audyt A): D-016 (bb_i2c.h) mówił "TWIM0 nie działa na tym sprzęcie" — C8 przywraca TWIM z fallbackiem bb i banem po 3 faultach z rzędu. ROZSTRZYZGA flash v0.3.2: `twim_faults`=0 → D-016 nieaktualne; `twi` rośnie i RTT pokaże "TWIM banned" → żyjemy z bb. Do weryfikacji PRZED produkcją.
 11. SAADC fail był cichy (audyt F/G) — od 0.3.2 licznik `sadc` w diag + guard sum==0; OFFSET_MV nadal = 0 (DO KALIBRACJI na egzemplarzu, SPEC 5.2).
 12. `bdrop` = 100% w logu 0.3.3 => prawdopodobnie klient bez subskrypcji CCCD (NRF_ERROR_INVALID_STATE); od 0.3.4 FW loguje kod pierwszego bledu (`BLE send err=0x..`, 8 = INVALID_STATE). Do potwierdzenia z subskrypcja PWA — bdrop ma byc ~0 przy streamie.

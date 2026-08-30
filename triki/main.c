@@ -38,6 +38,9 @@
  * v0.3.3 (walidacja HW baterii): pierwsza rzeczywista lektura — FW 6595mV @ skala 2/1 vs
  * real 3.3080V => AIN2/P0.04 = Vbat BEZ dzielnika 2x; SCALE 1/1; skala 2/1 byla zlego
  * punktu (P0.04 != P0.12; potwierdza tez WHO_AM_I=0x6A => SA0 wysoki). Dokladnosc ~0.3%.
+ * v0.3.5: DRDY na INT2 (pin 9 ukladu wg datasheet ukladu — INT1 ukladu niepolaczony,
+ * dlatego probe 0.3.3/0.3.4 nie widzial krawedzi); register INT2_CTRL (0x0E); probe
+ * rozszerzona: pin P0.09/P0.10 x polaryzacja (drdy_mode 1-4).
  * v0.3.4 (log RTT 0.3.3): (1) DWT->CYCCNT NIE ISTNIEJE na nRF52810 — wszystkie timingi
  * diag=0 i watchdog DRDY martwy; timebase -> TIMER1 @1MHz 16-bit (wrap-safe uint16, okno
  * 65.5ms), detekcja gapow -> RTC1 (>60ms => twardy ZUPT). (2) rampa velocity do clampa
@@ -188,9 +191,9 @@ static void btn_sample(void)                    /* poll timer context (9ms) */
 }
 
 /* ---- C7: akwizycja DRDY -> main loop (ISR tylko timestampuje; I2C/VBT/ring w main) ----
- * INT1 = DRDY_XL (LSM6DSL INT1_CTRL bit0). Polaryzacja INT1 niezweryfikowana plytowo
- * (D-016, brak LA) => boot-probe zlicza krawedzie w 100ms (~10 @104Hz): rising, potem
- * falling; brak krawedzi = fallback polling (poll timer zadaje probki co 9ms).
+ * 0.3.5: DRDY wychodzi z INT2 ukladu (pin 9 ukladu wg datasheet ukladu; INT1 niepolaczony
+ * — 0.3.3/0.3.4 probe nie widzial krawedzi). Register: INT2_CTRL (0x0E) bit0. nRF pin:
+ * P0.09 lub P0.10 ("G-klasa INT", SPEC 1) — probe sprawdza pin x polaryzacje (max 400ms).
  * Watchdog runtime: brak probki > 30ms => fallback (licznik drdy_fallbacks). */
 APP_TIMER_DEF(m_poll_timer);
 
@@ -214,33 +217,39 @@ static void drdy_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action)
     }                                                /* pelne FIFO: drop (main opozniony; watchdog pokryje) */
 }
 
-/* boot-probe polaryzacji INT1: blokujace ~100ms na probe; zwraca true gdy DRDY zyje */
+/* boot-probe DRDY: kandydujace piny nRF (P0.09/P0.10 — "G-klasa INT", SPEC 1) x polaryzacja;
+ * 0.3.5: DRDY wychodzi z INT2 ukladu (pin 9 ukladu) na JEDEN z nich — probe rozstrzyga.
+ * Blokujace ~100ms na probe (max 400ms); zwraca true gdy DRDY zyje. */
 static bool drdy_probe(void)
 {
+    static const uint32_t pins[2] = { PIN_IMU_INT1, PIN_IMU_INT2 };
     static const nrf_gpiote_polarity_t pols[2] = { NRF_GPIOTE_POLARITY_LOTOHI,
                                                    NRF_GPIOTE_POLARITY_HITOLO };
+    if (!lsm6dsl_drdy_enable(true)) return false;   /* I2C padl — polling tez nie zyje */
     for (uint8_t pi = 0; pi < 2; pi++) {
-        s_drdy_wr = s_drdy_rd = 0;
-        nrf_drv_gpiote_in_config_t cfg = NRFX_GPIOTE_CONFIG_IN_SENSE_LOTOHI(true);
-        cfg.sense = pols[pi];
-        if (nrf_drv_gpiote_in_init(PIN_IMU_INT1, &cfg, drdy_handler) != NRF_SUCCESS) return false;
-        nrf_drv_gpiote_in_event_enable(PIN_IMU_INT1, true);
-        if (!lsm6dsl_drdy_enable(true)) {
-            nrf_drv_gpiote_in_event_disable(PIN_IMU_INT1);
-            nrf_drv_gpiote_in_uninit(PIN_IMU_INT1);
-            return false;                            /* I2C padl — polling tez nie zyje */
+        for (uint8_t pol = 0; pol < 2; pol++) {
+            s_drdy_wr = s_drdy_rd = 0;
+            nrf_drv_gpiote_in_config_t cfg = NRFX_GPIOTE_CONFIG_IN_SENSE_LOTOHI(true);
+            cfg.sense = pols[pol];
+            if (nrf_drv_gpiote_in_init(pins[pi], &cfg, drdy_handler) != NRF_SUCCESS) {
+                lsm6dsl_drdy_enable(false);
+                return false;
+            }
+            nrf_drv_gpiote_in_event_enable(pins[pi], true);
+            nrf_delay_ms(100);                       /* ~10 krawedzi @104Hz */
+            uint8_t edges = (uint8_t)(s_drdy_wr - s_drdy_rd);
+            if (edges >= 5) {
+                g_diag.drdy_mode = (uint8_t)(pi * 2 + pol + 1);   /* 1/2 = P0.09 rising/falling,
+                                                                     3/4 = P0.10 rising/falling */
+                rtt_diag_printf("S2 DRDY ok pin=P0.%02u pol=%u edges=%u",
+                                pins[pi], pol, edges);
+                return true;
+            }
+            nrf_drv_gpiote_in_event_disable(pins[pi]);
+            nrf_drv_gpiote_in_uninit(pins[pi]);
         }
-        nrf_delay_ms(100);                           /* ~10 krawedzi @104Hz */
-        uint8_t edges = (uint8_t)(s_drdy_wr - s_drdy_rd);
-        if (edges >= 5) {
-            g_diag.drdy_mode = (uint8_t)(pi + 1);    /* 1 = rising, 2 = falling */
-            rtt_diag_printf("S2 DRDY ok pol=%u edges=%u", g_diag.drdy_mode, edges);
-            return true;
-        }
-        lsm6dsl_drdy_enable(false);
-        nrf_drv_gpiote_in_event_disable(PIN_IMU_INT1);
-        nrf_drv_gpiote_in_uninit(PIN_IMU_INT1);
     }
+    lsm6dsl_drdy_enable(false);
     return false;
 }
 

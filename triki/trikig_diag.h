@@ -36,7 +36,7 @@ typedef struct {
     uint16_t grav_us_max;    /* profil DSP (C6 planu): propagacja+korekcja+renorm */
     uint16_t lin_us_max;     /* LPF roznicy + detektor rest + projekcja */
     uint16_t vel_us_max;     /* integracja + ZUPT + clamp */
-    uint8_t  drdy_mode;      /* 0 = polling (brak DRDY), 1 = rising, 2 = falling */
+    uint8_t  drdy_mode;      /* 0 = polling; 1/2 = P0.09 rising/falling; 3/4 = P0.10 r/f */
 } trikig_diag_t;
 
 extern trikig_diag_t g_diag;

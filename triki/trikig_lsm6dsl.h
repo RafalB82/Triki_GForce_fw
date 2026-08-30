@@ -21,7 +21,9 @@
 #define LSM_CTRL2_G       0x11
 #define LSM_CTRL3_C       0x12
 #define LSM_OUTX_L_G      0x22   /* burst 12B: gyro(6)+acc(6), IF_INC */
-#define LSM_INT1_CTRL     0x0D   /* DRDY_XL = bit0 (C7); zapis walidowany readbackiem */
+#define LSM_INT1_CTRL     0x0D   /* DRDY_XL = bit0 */
+#define LSM_INT2_CTRL     0x0E   /* DRDY_XL = bit0 — **DRDY ukladu wychodzi na INT2** (pin 9
+                                  * ukladu wg datasheet ukladu; INT1 puste) — 0.3.5 */
 
 /* --- wartosci CTRL1_XL / CTRL2_G (datasheet, NIE z pamieci!) ---
  * ODR bity [7:4]: 0100 = 104 Hz
@@ -41,6 +43,6 @@
 
 bool    lsm6dsl_init(void);                    /* WHO_AM_I + SW reset + config, z readbackiem RTT */
 bool    lsm6dsl_read_motion(uint8_t *dst12);   /* burst gyro(6)+acc(6) i16LE (TWIM, fallback bb) */
-bool    lsm6dsl_drdy_enable(bool on);          /* C7: INT1_CTRL = DRDY_XL, z readbackiem */
+bool    lsm6dsl_drdy_enable(bool on);          /* C7b: INT2_CTRL = DRDY_XL, z readbackiem */
 
 #endif /* TRIKIG_LSM6DSL_H */

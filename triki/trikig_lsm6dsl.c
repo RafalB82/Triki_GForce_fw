@@ -109,12 +109,14 @@ bool lsm6dsl_init(void)
 
 bool lsm6dsl_drdy_enable(bool on)
 {
-    /* INT1_CTRL (0x0D) bit0 = INT1_DRDY_XL (datasheet); zapis walidowany readbackiem (D-017) */
-    if (!reg_write(LSM_INT1_CTRL, on ? 0x01u : 0x00u)) return false;
+    /* 0.3.5: DRDY ukladu wychodzi na INT2 (pin 9 ukladu wg datasheet ukladu) =>
+     * INT2_CTRL (0x0E) bit0 = INT2_DRDY_XL; zapis walidowany readbackiem (D-017).
+     * Wczesniejsze INT1_CTRL (0x0D) nie dawalo krawedzi — INT1 ukladu niepolaczony. */
+    if (!reg_write(LSM_INT2_CTRL, on ? 0x01u : 0x00u)) return false;
     uint8_t rb = 0;
-    if (!reg_read(LSM_INT1_CTRL, &rb, 1)) return false;
+    if (!reg_read(LSM_INT2_CTRL, &rb, 1)) return false;
     if (rb != (on ? 0x01u : 0x00u)) {
-        rtt_diag_printf("S2 INT1_CTRL rb=%02x MISMATCH", rb);
+        rtt_diag_printf("S2 INT2_CTRL rb=%02x MISMATCH", rb);
         return false;
     }
     return true;
