@@ -52,14 +52,23 @@ trikig_board.c/h    LED/BTN/SYSTEMOFF + rtt_diag_printf (makro pod TRIKIG_RTT_DI
 
 ### Przeplyw danych (jeden kierunek, SPSC)
 ```
-app_timer(9ms) -> lsm6dsl_read_motion() [BB I2C, 12B z 0x22]
-  -> ramka 14B [0x22,0x00 | gyro6 | acc6] -> ring[4] (drop najnowszej przy pelnym)
-     -> petla glowna -> ble_nus_data_send (14B/notify) -> PWA (WebBLE)
+INT1 DRDY (LSM6DSL INT1_CTRL=DRDY_XL) -> GPIOTE ISR (timestamp DWT) 
+  -> petla glowna: lsm6dsl_read_motion() [TWIM 400kHz, fallback BB I2C, 12B z 0x22]
+  -> ramka 14B [0x22,0x00 | gyro6 | acc6] -> ring[16] (drop najnowszej przy pelnym)
+     -> ble_nus_data_send (14B/notify) -> PWA (WebBLE)
 ```
 
-### Kolekcja
-- Poll app_timer **9ms** (~111Hz tick) vs ODR **104Hz** -> okazjonalne duplikaty probek zamiast dropow (v19 [Z]; pkt 3 O-013 do decyzji).
-- Poll tylko przy aktywnym polaczeniu (handler early-return bez polaczenia).
+### Kolekcja (od 0.3.1)
+- **DRDY**: INT1 -> GPIOTE, timestamp w ISR; odczyt w petli glownej. Auto-probe polaryzacji
+  przy boocie (rising -> falling, zliczanie krawedzi w 100ms, ~10 @104Hz) — dziala bez LA;
+  brak krawedzi => fallback polling 9ms (app_timer) + watchdog runtime (brak probki > 30ms
+  => odczyt zapasowy, licznik `drdy_fallbacks`).
+- **dt = t[n]-t[n-1]** z timestampow DRDY (DWT, HFCLK); clamp 4-40ms (`dt_faults`), gap
+  > 100ms => twardy ZUPT + dt nominalny; diag: `dt min/avg/max us`.
+- **memcmp dup-guard = wylacznie diagnostyka** w trybie DRDY (probke identyfikuje DRDY,
+  P0 audyt 2026-08-30); w trybie polling duplikat nadal nie wchodzi do calkowania.
+- **I2C**: TWIM0 @400kHz (DMA, ~40us, ~0 CPU) z fallbackiem bit-bang (init, bus-clear,
+  fault-recovery, licznik `twim_faults`).
 
 ---
 
@@ -181,28 +190,28 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 
 | Element | Detal |
 |---|---|
-| Wejscie | surowe gyro+acc 12B z OUT 0x22 (feed w poll handler, przed ramka); dt = 1/ODR (parametr; C7 DRDY podmieni na mierzony) |
+| Wejscie | gyro+acc 12B z OUT 0x22, odczyt w main loop wyzwalany DRDY (INT1 -> GPIOTE, timestamp w ISR); TWIM 400kHz + fallback bb; dt = t[n]-t[n-1] (clamp 4-40ms, `dt_faults`, gap>100ms => twardy ZUPT); fallback polling 9ms |
 | Model | gravity estimator (filtr komplementarny): propagacja gyro `dg = -(w x g)*dt` co ramke (q16.16 x q8.8, zaokraglana), korekcja ACC gated (|w| < 2 dps I innowacja < 1.0 m/s^2), renormalizacja do g; `lin = LPF(acc - g_est)` (JEDNO LPF na roznicy); `a_move = dot(lin, axis)`; `v += a_move*dt`; os ruchu default X barbell (vbt_set_axis) |
 | Bezruch | `||lin|| < 0.3 m/s^2` przez 8 ramek — detektor 1. rzedu (stara norma \|\|a\|-g\| byla 2. rzedu: dev ~ a^2/2g, slepa na wolne pushy); fallback: wymuszona kalibracja g z LPF po ~5s bez bezruchu (TRIKIG_VBT_BIAS_FORCE_FRAMES) |
 | ZUPT | decay 1/32/ramke przy bezruchu (tau ~0.31s) z min-krokiem 1 q8.8 (decay stenal przy \|v\| < 125 mm/s) |
 | Progi | clamp v 15.6 m/s; clamp normy (audyt 2026-08-30) |
 | Arytmetyka | fixed-point q8.8/q16.16 (brak FPU); 2x isqrt/ramke (rest + renorm) |
 | API | vbt_reset() po imu_init; vbt_on_frame(raw12, dt_q16); vbt_set_axis(q12[3]); vbt_velocity_mms() [mm/s]; vbt_moving(); vbt_flags() (bit2 = g-estimated) |
-| Diag | RTT ~1s: `VBT v=... mv=... dup=...` + `DIAG smpl/dup/rdrop/gap/bdrop | per min/avg/max | max acq/dsp/ble us` (pod TRIKIG_RTT_DIAG) |
+| Diag | RTT ~1s: `VBT v=... mv=... dup=...` + `DIAG drdy=... smpl/dup/rdrop/gap/bdrop | dtf/fb/twi | dt min/avg/max | max acq/dsp/g/lin/v/ble us` (pod TRIKIG_RTT_DIAG); profil DSP gravity/linear/velocity us pod TRIKIG_VBT_PROFILE |
 | Walidacja | harness offline `tools/vbt_offline` (5 scenariuszy syntetycznych PASS: rest60/rot/rot_move/rep/rep_soft); znane ograniczenie: wander ~±0.4 m/s przy jednoczesnej rotacji+oscylacji (adversarial, samolimitujacy, powrot do 0 po ustaniu) |
 | Ograniczenia | korekcja g tylko quasi-statyka => dryf gyro-bias przy dlugim trzymaniu (typ. 40mdps => ~2.4deg/min); os stalych w ukladzie kapsla; walidacja terenowa vs Triki_G/PWA przed produkcyjnym uzyciem |
 | Expose | API wewnetrzne; pole vel/flags wire v2 bez zmian |
 
 ---
-## 10. Znane ograniczenia (stan v21)
+## 10. Znane ograniczenia (stan 0.3.1)
 
-1. Duplikaty probek (timer 9ms vs ODR 104Hz) — do decyzji: 10ms/dryf albo INT1 DRDY [O-013 pkt 3].
+1. Duplikaty probek — ZROBIONE 0.3.1 (DRDY identyfikuje probki; memcmp = tylko diagnostyka; w fallback polling dup-guard nadal aktywny).
 2. Brak backpressure: NRF_ERROR_RESOURCES = drop ramki (brak buforowania na conn interval) [O-013 pkt 2].
 3. Pomiar baterii — ZROBIONE 0.2.0 (SAADC AIN2, dzielnik 100k/100k potwierdzony, ramka `22 04` na `20 17`, flags bit3); OFFSET Vf na egzemplarzu pending.
 4. Brak watchdog — ZROBIONE v0.0.27 (WDT 12s, covers boot).
-5. BB I2C ~250kHz = CPU-heavy burst (12B @104Hz — OK, ale bez DMA).
-6. TWIM i FIFO nie dzialaja na tym sprzecie bez diagnozy LA [O-013 pkt 8, AN4650].
-7. INT1 polaryzacja niezweryfikowana; INT1 skonfigurowany jako wejscie (dead w strategii poll).
+5. BB I2C CPU-heavy — ZROBIONE 0.3.1 dla path danych (TWIM 400kHz + DMA; bb zostaje dla init/bus-clear/fault-recovery).
+6. FIFO LSM6DSL — ODROCZONE do decyzji ODR >104 Hz (przy 104Hz DRDY+ring16 wystarcza; bez LA bitfields FIFO niezweryfikowane [AN4650, D-016]).
+7. INT1 polaryzacja — wdrozona samowalidacja runtime 0.3.1 (auto-probe rising/falling + fallback polling; polaryzacja widoczna w RTT `drdy=`).
 8. m_stream_on zawsze true po starcie (init-komenda tylko potwierdza).
 9. v21/v22 bez logow PWA i testow terenowych (produkcja pozostaje v19; v21 boot zielony).
 

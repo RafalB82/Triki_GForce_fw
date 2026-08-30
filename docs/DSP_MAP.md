@@ -84,6 +84,9 @@
 ### F7 — energy optimization (v0.5.x, po LA)
 - INT1 DRDY/FIFO watermark (weryfikacja polaryzacji na LA — D-016), TWIM 400kHz retry, sleep między próbkami, ODR on-demand z F2.
 - **Kryterium:** prąd średni zmierzony, cel -50% vs F5 baseline przy 104Hz.
+- **Częściowo wdrożone 0.3.1 (Faza 2):** INT1 DRDY z runtime auto-probe polaryzacji
+  (bez LA; fallback polling + watchdog), TWIM 400kHz (hybryda z bb recovery), ring 16,
+  dt z timestampów ISR. FIFO watermark: pending decyzji ODR >104 Hz.
 
 ### Bramka 1.0.0
 - F1+F2+F3 stabilne, F5 wchodzi, tygodniowa terenówka bez resetów/utrata danych, Triki_G na wire v2 domyślnie.
