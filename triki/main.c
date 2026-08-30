@@ -274,6 +274,40 @@ static bool drdy_probe(void)
     return false;
 }
 
+#if TRIKIG_PIN_SCAN
+/* Debug: skan wszystkich wolnych GPIO pod katem krawedzi DRDY (INT2 ukladu wlaczony
+ * na czas skanu). Wolne = wszystko procz: AIN2/4 + 12 (dzielnik), 5/6 (I2C), 21 (RESET),
+ * 25 (BTN), 28 (LED). Pull-down na skanowanym pinie -> floaty ciche; DRDY push-pull
+ * daje ~6 krawedzi / 60ms @104Hz. Wynik: RTT "S2 SCAN P0.xx edges=N". */
+static void pin_scan(void)
+{
+    static const uint8_t skip[] = { 4u, 5u, 6u, 12u, 21u, 25u, 28u };
+    rtt_diag_printf("S2 PIN SCAN start (INT2 DRDY on)");
+    for (uint8_t p = 0; p < 32; p++) {
+        bool skip_pin = false;
+        for (uint8_t i = 0; i < sizeof(skip); i++)
+            if (skip[i] == p) { skip_pin = true; break; }
+        if (skip_pin) continue;
+        s_probe_cnt = 0;
+        s_probing = true;
+        nrf_drv_gpiote_in_config_t cfg = NRFX_GPIOTE_CONFIG_IN_SENSE_LOTOHI(true);
+        cfg.pull = NRF_GPIO_PIN_PULLDOWN;
+        if (nrf_drv_gpiote_in_init(p, &cfg, drdy_handler) == NRF_SUCCESS) {
+            nrf_drv_gpiote_in_event_enable(p, true);
+            nrf_delay_ms(60);
+            s_probing = false;
+            nrf_drv_gpiote_in_event_disable(p);
+            nrf_drv_gpiote_in_uninit(p);
+            if (s_probe_cnt > 0)
+                rtt_diag_printf("S2 SCAN P0.%02u edges=%u", p, s_probe_cnt);
+        } else {
+            s_probing = false;
+        }
+    }
+    rtt_diag_printf("S2 PIN SCAN done");
+}
+#endif
+
 /* odczyt + VBT + ring: wspolne dla DRDY i fallback; ts = czas probki z ISR (DRDY)
  * albo teraz (fallback). ts_valid=false => dt nominalny (fallback nie zna czasu probki). */
 static void process_sample(uint32_t ts_cyc, bool ts_valid)
@@ -546,6 +580,9 @@ int main(void)
     vbt_reset();                                 /* bias grawitacji zasilony pierwszymi ramkami (spoczynek) */
     /* C7: probe DRDY (polaryzacja INT1 niezweryfikowana plytowo — D-016; runtime-probe
      * zlicza krawedzie w 100ms, ~10 @104Hz; rising -> falling -> fallback polling) */
+#if TRIKIG_PIN_SCAN
+    pin_scan();
+#endif
     if (m_imu_ok && nrf_drv_gpiote_init() == NRF_SUCCESS && drdy_probe()) {
         /* DRDY aktywny: probki procesowane w main loop z timestampow ISR */
     } else {
