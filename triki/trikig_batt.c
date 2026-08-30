@@ -15,6 +15,7 @@
 #include "nrf_delay.h"
 #include "nrf_drv_saadc.h"
 #include "trikig_batt.h"
+#include "trikig_diag.h"
 
 #define BATT_FS_MV              3600L   /* 0.6V * gain 1/6 */
 #define BATT_FS_COUNTS          4095L   /* 12-bit */
@@ -67,14 +68,27 @@ uint16_t batt_sample_mv(void)
     if (!s_ready) return 0;
 
     int32_t sum = 0;
+    uint32_t faults = 0;
     for (uint32_t i = 0; i < TRIKIG_BATT_SAMPLES; i++) {
-        if (nrf_drv_saadc_sample_convert(0, &s_sample) != NRF_SUCCESS) return 0;
+        /* audyt F/G 2026-08-30: fail SAADC nie jest cichy — licznik w diag; pojedyncza
+         * nieudana konwersja nie kasuje pomiaru (sample ignorowana, reszta probek liczy). */
+        if (nrf_drv_saadc_sample_convert(0, &s_sample) != NRF_SUCCESS) {
+            faults++;
+            continue;
+        }
         if (s_sample > 0) sum += s_sample;      /* ujemne (offset) -> ignoruj */
+    }
+    if (faults != 0 && g_diag.saadc_faults < 0xFFFFFFFFu) g_diag.saadc_faults += faults;
+    if (faults == TRIKIG_BATT_SAMPLES || sum == 0) {
+        /* caly pomiar nieudany albo sum=0 (same probki <= 0): zwroc 0 = "brak pomiaru"
+         * — main nie nadpisze starej wartosci. Guard sum==0 chroni takze przypadek
+         * skalibrowanego OFFSET_MV != 0 (audyt G: inaczej OFFSET wygladalby jak odczyt). */
+        return 0;
     }
 
     /* node_mV -> Vbat: skala + offset diody; clamp do uint16 */
     int32_t mv = (sum * BATT_FS_MV * (int32_t)TRIKIG_BATT_SCALE_NUM) /
-                 (BATT_FS_COUNTS * (int32_t)TRIKIG_BATT_SAMPLES * (int32_t)TRIKIG_BATT_SCALE_DEN);
+                 (BATT_FS_COUNTS * (int32_t)(TRIKIG_BATT_SAMPLES - faults) * (int32_t)TRIKIG_BATT_SCALE_DEN);
     mv += TRIKIG_BATT_OFFSET_MV;
     if (mv < 0) mv = 0;
     if (mv > 0xFFFF) mv = 0xFFFF;

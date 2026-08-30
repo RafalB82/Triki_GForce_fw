@@ -1,8 +1,11 @@
 /**
  * trikig_bb_i2c.h - bit-bang I2C master (nRF52810, open-drain S0D1 + pullup)
  *
- * D-016: TWIM0 nie dziala na tym sprzedzie mimo poprawnej konfiguracji;
- * bit-bang ~250kHz (bb_delay 2us) zweryfikowany na sprzecie end-to-end.
+ * D-016 (stan sprzed C8): TWIM0 nie dzialal na tym sprzecie mimo poprawnej konfiguracji;
+ * bit-bang ~250kHz (bb_delay 2us) zweryfikowany end-to-end. Od 0.3.1 (C8) TWIM wraca jako
+ * path danych z fallbackiem bb — sprzecznosc rozstrzyga licznik g_diag.twim_faults na
+ * sprzecie: faults=0 => D-016 nieaktualne; faults rosnie systematycznie => system zyje z bb
+ * (ban TWIM po 3 faultach z rzedu, patrz trikig_lsm6dsl.c). Do potwierdzenia przy flashu.
  */
 #ifndef TRIKIG_BB_I2C_H
 #define TRIKIG_BB_I2C_H

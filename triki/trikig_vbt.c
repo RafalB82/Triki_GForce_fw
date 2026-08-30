@@ -47,6 +47,8 @@ static int32_t s_axis[3];       /* q12, os ruchu (default X — gryf, kapsel na 
 static uint8_t s_rest_cnt;
 static bool    s_rest;
 static bool    s_gest_ok;       /* false do pierwszej kalibracji g (boot-hold / fallback) */
+static bool    s_gest_forced;   /* kalibracja g z WYMUSZENIA (fallback 5s w ruchu) — host
+                                 * powinien oznaczyc poczatkowe serie jako niepewne (audyt) */
 static uint16_t s_frames;       /* licznik ramek od resetu (fallback kalibracji) */
 
 /* raw i16 (1g=2048) -> q8.8 m/s^2: raw/2048*9.80665*256 = raw*1.22583 => raw*314>>8 (err 0.06%) */
@@ -79,6 +81,7 @@ void vbt_reset(void)
     s_rest_cnt = 0;
     s_rest = false;
     s_gest_ok = false;
+    s_gest_forced = false;
     s_frames = 0;
 }
 
@@ -128,6 +131,7 @@ void vbt_on_frame(const uint8_t *raw12, uint16_t dt_q16)
         if (dev < (int32_t)TRIKIG_VBT_REST_TH || s_frames >= TRIKIG_VBT_BIAS_FORCE_FRAMES) {
             memcpy(s_gest, s_lpf, sizeof(s_gest));
             s_gest_ok = true;
+            s_gest_forced = (s_frames >= TRIKIG_VBT_BIAS_FORCE_FRAMES);   /* audyt: host widzi */
             s_rest = true;                      /* pierwszy po-snapie frame z korekcja */
         }
         return;                                 /* hold: integracja wstrzymana do kalibracji g */
@@ -228,5 +232,6 @@ uint8_t vbt_flags(void)
     if (!s_rest)     f |= 0x01;   /* moving */
     if (s_rest)      f |= 0x02;   /* rest */
     if (s_gest_ok)   f |= 0x04;   /* g estimated (bylo: bias calibrated) */
+    if (s_gest_forced) f |= 0x10; /* g z wymuszenia (fallback 5s w ruchu) — kalibracja niepewna */
     return f;
 }

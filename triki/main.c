@@ -29,6 +29,12 @@
  * dt_fault, gap>100ms => twardy ZUPT); memcmp = wylacznie diagnostyka w DRDY;
  * C8 TWIM 400kHz hybryda (bb init/bus-clear, fault -> bb fallback, licznik twim_faults);
  * C9 ring 16; profil DSP gravity/linear/velocity us (TRIKIG_VBT_PROFILE); isqrt 3->1.
+ * v0.3.2 (audyt zewnetrzny 2026-08-30): A — ban TWIM po 3 faultach z rzedu (D-016 real?
+ * nie bedzie re-init co probe; rozstrzyga twim_faults na sprzecie); F/G — SAADC faults
+ * liczone w diag + guard sum==0 (OFFSET_MV != 0 nie wyglada jak odczyt); H — low-batt
+ * snapshot przy probce (K2 spojnosc, nie OR przy wysylce); flags v2 bit4 = g-forced
+ * (kalibracja wymuszona w ruchu => host oznacza serie jako niepewna); IMU_ODR_HZ zamiast
+ * magic 104; CI: vbt_offline w GH Actions (.github/workflows/vbt-offline.yml).
  */
 #include <stdint.h>
 #include <stdbool.h>
@@ -85,6 +91,7 @@
 #define DT_MIN_US               4000u       /* clamp dt (P3): < 250 Hz nie zdarzy sie przy 104 ODR */
 #define DT_MAX_US               40000u      /* > 25 Hz = probka zgubiona */
 #define DT_GAP_US               100000u     /* > 100ms przerwy => twardy ZUPT + nominalny dt */
+#define IMU_ODR_HZ              104u        /* dzielnik logu diag ~1s; zmiana ODR => popraw tu (F2) */
 
 BLE_NUS_DEF(m_nus, NRF_SDH_BLE_TOTAL_LINK_COUNT);
 NRF_BLE_GATT_DEF(m_gatt);
@@ -282,7 +289,9 @@ static void process_sample(uint32_t ts_cyc, bool ts_valid)
     memcpy(ring[slot].raw, raw, sizeof(raw));
     ring[slot].seq     = seq;
     ring[slot].vel_mms = (int16_t)vbt_velocity_mms();   /* K2: SNAPSHOT przy probce, nie przy wysylce */
-    ring[slot].flags   = vbt_flags();                    /* K2: SNAPSHOT przy probce */
+    /* K2 (audyt H 2026-08-30): low-batt tez snapshot przy probce — jeden model danych,
+     * nie OR przy wysylce; bateria wolnozmienna, ale spójnosc architektury wazniejsza. */
+    ring[slot].flags   = (uint8_t)(vbt_flags() | (g_batt_low ? TRIKIG_BATT_FLAGS_LOW : 0));
     __DMB();
     ring_wr = next;
     s_last_sample_cyc = diag_cyc();
@@ -618,8 +627,8 @@ int main(void)
                     memcpy(&txbuf[4], ring[slot].raw, 12);
                     txbuf[16] = (uint8_t)((uint16_t)ring[slot].vel_mms & 0xFF);
                     txbuf[17] = (uint8_t)((uint16_t)ring[slot].vel_mms >> 8);
-                    /* bity 0-2 = snapshot VBT; bit3 = low-battery (F5, OR przy wysylce) */
-                    txbuf[18] = ring[slot].flags | (g_batt_low ? TRIKIG_BATT_FLAGS_LOW : 0);
+                    /* bity 0-4 = snapshot VBT (bit4 = g-forced, audyt H: low-batt juz w snapshot) */
+                    txbuf[18] = ring[slot].flags;
                     p_tx = txbuf;
                     txlen = FRAME_V2_SIZE;
                 } else {
@@ -641,7 +650,7 @@ int main(void)
             }
             ring_rd = (uint8_t)((ring_rd + 1) % RING_SLOTS);
 #if TRIKIG_RTT_DIAG
-            if (++vbt_log_div >= 104) {          /* ~1s: velocity do walidacji vs PWA */
+            if (++vbt_log_div >= IMU_ODR_HZ) {   /* ~1s: velocity do walidacji vs PWA */
                 vbt_log_div = 0;
                 rtt_diag_printf("VBT v=%d mm/s mv=%u dup=%u", (int)vbt_velocity_mms(), (unsigned)vbt_moving(), (unsigned)s_dup_count);
                 diag_print();                    /* C1: liczniki dropow + okresy + timingi */

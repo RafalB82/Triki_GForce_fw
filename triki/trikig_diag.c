@@ -31,12 +31,12 @@ void diag_period_us(uint16_t us)
 #if TRIKIG_RTT_DIAG
 void diag_print(void)
 {
-    SEGGER_RTT_printf(0, "DIAG drdy=%u smpl=%u dup=%u rdrop=%u gap=%u bdrop=%u | dtf=%u fb=%u twi=%u",
+    SEGGER_RTT_printf(0, "DIAG drdy=%u smpl=%u dup=%u rdrop=%u gap=%u bdrop=%u | dtf=%u fb=%u twi=%u sadc=%u",
                       (unsigned)g_diag.drdy_mode, (unsigned)g_diag.imu_samples,
                       (unsigned)g_diag.imu_dups, (unsigned)g_diag.ring_drops,
                       (unsigned)g_diag.seq_gaps, (unsigned)g_diag.ble_drops,
                       (unsigned)g_diag.dt_faults, (unsigned)g_diag.drdy_fallbacks,
-                      (unsigned)g_diag.twim_faults);
+                      (unsigned)g_diag.twim_faults, (unsigned)g_diag.saadc_faults);
     SEGGER_RTT_WriteString(0, "\r\n");
     SEGGER_RTT_printf(0, "DIAG dt %u/%u/%u us | max acq=%u dsp=%u g=%u lin=%u v=%u ble=%u us",
                       (unsigned)g_diag.per_min_us, (unsigned)g_diag.per_avg_us,

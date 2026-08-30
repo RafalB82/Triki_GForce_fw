@@ -1,0 +1,33 @@
+name: vbt-offline
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  vbt-offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build harness (host cc, kompiluje triki/trikig_vbt.c 1:1 z FW)
+        run: ./tools/vbt_offline/build.sh
+      - name: Regression scenarios (plan VBT test A/B/C)
+        run: ./tools/vbt_offline/vbt_offline all
+      - name: Build firmware (release; SDK 17.1.1 cache)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq gcc-arm-none-eabi
+          SDK_DIR="$HOME/nrf5sdk"
+          if [ ! -d "$SDK_DIR" ]; then
+            curl -fsSL -o sdk.zip "$NRF5_SDK_URL" || { echo "SDK download niedostepny (robots) — pomijam build FW"; exit 0; }
+            unzip -q sdk.zip -d "$HOME"
+            mv "$HOME"/nRF5_SDK_17.1.1_* "$SDK_DIR"
+          fi
+          echo 'GNU_INSTALL_ROOT := /usr/bin/' >> $SDK_DIR/components/toolchain/gcc/Makefile.posix
+          echo 'GNU_VERSION := 13.2.1' >> $SDK_DIR/components/toolchain/gcc/Makefile.posix
+          echo 'GNU_PREFIX := arm-none-eabi' >> $SDK_DIR/components/toolchain/gcc/Makefile.posix
+          cd triki && make release
+          arm-none-eabi-size _build/nrf52810_xxaa.out
+        env:
+          NRF5_SDK_URL: https://www.nordicsemi.com/-/media/Software-and-other-downloads/SDKs/nRF5/Binaries/nRF5_SDK_17.1.1_ddde560.zip

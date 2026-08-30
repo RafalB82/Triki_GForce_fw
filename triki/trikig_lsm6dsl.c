@@ -12,12 +12,19 @@
 
 /* C8: TWIM0 @400kHz — path danych (burst 12B ~40us vs bb ~300us, ~0 CPU / DMA).
  * Hybryda: init/bus-clear zostaja bit-bang (stuck-bus recovery), TWIM tylko odczyt;
- * fault TWIM => uninit (piny -> GPIO), odczyt bb, re-init lazy przy nastepnej probce. */
+ * fault TWIM => uninit (piny -> GPIO), odczyt bb, re-init lazy przy nastepnej probce.
+ * Audyt A 2026-08-30 (D-016 vs C8): gdy TWIM realnie nie dziala na plycie (D-016),
+ * re-init co probe = czysty koszt => ban po 3 faultach z rzedu (bb do resetu,
+ * jednorazowy koszt, licznik twim_faults rozstrzyga na sprzecie). */
+#define LSM_TWIM_BAN_FAULTS 3u
 static const nrfx_twim_t m_twi = NRFX_TWIM_INSTANCE(0);
 static bool m_twim_ready = false;
+static bool m_twim_banned = false;              /* true: bb do resetu (D-016 real) */
+static uint8_t m_twim_consecutive = 0;
 
 static bool lsm6dsl_twim_init(void)
 {
+    if (m_twim_banned) return false;
     if (m_twim_ready) return true;
     nrfx_twim_config_t cfg = NRFX_TWIM_DEFAULT_CONFIG;
     cfg.scl       = 6u;                       /* P0.06 SCL (SPEC 1) */
@@ -120,10 +127,17 @@ bool lsm6dsl_read_motion(uint8_t *dst12)
         /* STOP po TX; LSM6DSL pamieta adres rejestru (IF_INC), RX od nowego START */
         nrfx_err_t e = nrfx_twim_tx(&m_twi, LSM_ADDR, &reg, 1, false);
         if (e == NRFX_SUCCESS) e = nrfx_twim_rx(&m_twi, LSM_ADDR, dst12, 12);
-        if (e == NRFX_SUCCESS) return true;
+        if (e == NRFX_SUCCESS) {
+            m_twim_consecutive = 0;
+            return true;
+        }
         if (g_diag.twim_faults < 0xFFFFFFFFu) g_diag.twim_faults++;
         nrfx_twim_uninit(&m_twi);            /* piny 5/6 -> GPIO dla bb fallback */
         m_twim_ready = false;
+        if (++m_twim_consecutive >= LSM_TWIM_BAN_FAULTS) {
+            m_twim_banned = true;            /* D-016 real? bb do resetu (audyt A) */
+            rtt_diag_printf("S2 TWIM banned after %u faults", g_diag.twim_faults);
+        }
     }
     /* fallback: bit-bang (sprawdzona sciezka sprzed C8) */
     bb_i2c_bus_clear();

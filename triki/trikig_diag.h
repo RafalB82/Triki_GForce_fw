@@ -24,6 +24,9 @@ typedef struct {
     uint32_t dt_faults;      /* dt poza clampem lub gap > 100ms (C7) */
     uint32_t drdy_fallbacks; /* odczyty watchdogiem poll-timera zamiast DRDY (C7) */
     uint32_t twim_faults;    /* bledy TWIM -> fallback bit-bang (C8) */
+    uint32_t saadc_faults;   /* nieudane konwersje SAADC baterii (audyt F/G; producent:
+                              * sleep timer 1s + rzadki fallback z main — dual-producer
+                              * akceptowany dla telemetrii, race moze zgubic ++ zdarza) */
     uint16_t per_min_us;     /* dt = t[n]-t[n-1] z timestampow DRDY [us] */
     uint16_t per_max_us;
     uint16_t per_avg_us;     /* EMA 1/32 */

@@ -115,7 +115,7 @@ Ramka 14B: [0x22][0x00] [gX_l gX_h gY_l gY_h gZ_l gZ_h aX_l aX_h aY_l aY_h aZ_l 
 ```
 Ramka 19B: [0x22][0x01] [seq_l seq_h] [gyro6] [acc6] [vel_l vel_h] [flags]
            header 2B  | seq u16LE | gyro FIRST (6B) | acc (6B) | vel i16LE mm/s | flags u8
-           flags: bit0 moving, bit1 rest, bit2 g-estimated (0.3.0; były: bias-calibrated); vel+flags = snapshot VBT z chwili poll
+           flags: bit0 moving, bit1 rest, bit2 g-estimated (0.3.0), bit3 low-battery (od 0.3.2 snapshot przy próbce, nie OR przy wysyłce), bit4 g-forced = kalibracja g wymuszona po ~5s bez bezruchu → początkowe serie niepewne (0.3.2); vel+flags = snapshot VBT z chwili próbki
 ```
 
 **Semantyka seq (0.1.0, plan 027 K4):** licznik każdej próbki IMU przy aktywnym połączeniu —
@@ -197,7 +197,7 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 | Progi | clamp v 15.6 m/s; clamp normy (audyt 2026-08-30) |
 | Arytmetyka | fixed-point q8.8/q16.16 (brak FPU); 2x isqrt/ramke (rest + renorm) |
 | API | vbt_reset() po imu_init; vbt_on_frame(raw12, dt_q16); vbt_set_axis(q12[3]); vbt_velocity_mms() [mm/s]; vbt_moving(); vbt_flags() (bit2 = g-estimated) |
-| Diag | RTT ~1s: `VBT v=... mv=... dup=...` + `DIAG drdy=... smpl/dup/rdrop/gap/bdrop | dtf/fb/twi | dt min/avg/max | max acq/dsp/g/lin/v/ble us` (pod TRIKIG_RTT_DIAG); profil DSP gravity/linear/velocity us pod TRIKIG_VBT_PROFILE |
+| Diag | RTT ~1s: `VBT v=... mv=... dup=...` + `DIAG drdy=... smpl/dup/rdrop/gap/bdrop | dtf/fb/twi/sadc | dt min/avg/max | max acq/dsp/g/lin/v/ble us` (pod TRIKIG_RTT_DIAG); profil DSP gravity/linear/velocity us pod TRIKIG_VBT_PROFILE |
 | Walidacja | harness offline `tools/vbt_offline` (5 scenariuszy syntetycznych PASS: rest60/rot/rot_move/rep/rep_soft); znane ograniczenie: wander ~±0.4 m/s przy jednoczesnej rotacji+oscylacji (adversarial, samolimitujacy, powrot do 0 po ustaniu) |
 | Ograniczenia | korekcja g tylko quasi-statyka => dryf gyro-bias przy dlugim trzymaniu (typ. 40mdps => ~2.4deg/min); os stalych w ukladzie kapsla; walidacja terenowa vs Triki_G/PWA przed produkcyjnym uzyciem |
 | Expose | API wewnetrzne; pole vel/flags wire v2 bez zmian |
@@ -211,7 +211,9 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 4. Brak watchdog — ZROBIONE v0.0.27 (WDT 12s, covers boot).
 5. BB I2C CPU-heavy — ZROBIONE 0.3.1 dla path danych (TWIM 400kHz + DMA; bb zostaje dla init/bus-clear/fault-recovery).
 6. FIFO LSM6DSL — ODROCZONE do decyzji ODR >104 Hz (przy 104Hz DRDY+ring16 wystarcza; bez LA bitfields FIFO niezweryfikowane [AN4650, D-016]).
-7. INT1 polaryzacja — wdrozona samowalidacja runtime 0.3.1 (auto-probe rising/falling + fallback polling; polaryzacja widoczna w RTT `drdy=`).
+7. INT1 polaryzacja — wdrozona samowalidacja runtime 0.3.1 (auto-probe rising/falling + fallback polling; polaryzacja widoczna w RTT `drdy=`). Long-term: potwierdzić na LA i zastąpić auto-probe stałą (dług HW, audyt C).
+10. TWIM vs D-016 (audyt A): D-016 (bb_i2c.h) mówił "TWIM0 nie działa na tym sprzęcie" — C8 przywraca TWIM z fallbackiem bb i banem po 3 faultach z rzędu. ROZSTRZYZGA flash v0.3.2: `twim_faults`=0 → D-016 nieaktualne; `twi` rośnie i RTT pokaże "TWIM banned" → żyjemy z bb. Do weryfikacji PRZED produkcją.
+11. SAADC fail był cichy (audyt F/G) — od 0.3.2 licznik `sadc` w diag + guard sum==0; OFFSET_MV nadal = 0 (DO KALIBRACJI na egzemplarzu, SPEC 5.2).
 8. m_stream_on zawsze true po starcie (init-komenda tylko potwierdza).
 9. v21/v22 bez logow PWA i testow terenowych (produkcja pozostaje v19; v21 boot zielony).
 

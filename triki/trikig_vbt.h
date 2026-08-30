@@ -71,6 +71,7 @@ void    vbt_set_axis(const int16_t axis_q12[3]);  /* os ruchu (normalizowana do 
 void    vbt_reset_velocity(void);           /* twardy ZUPT: v=0 (C7: gap dt > 100ms) */
 int32_t vbt_velocity_mms(void);             /* velocity na osi ruchu [mm/s] (podpisane) */
 bool    vbt_moving(void);
-uint8_t vbt_flags(void);                    /* bit0 moving, bit1 rest, bit2 g-estimated */
+uint8_t vbt_flags(void);                    /* bit0 moving, bit1 rest, bit2 g-estimated,
+                                              * bit4 g-forced (fallback 5s w ruchu => niepewna) */
 
 #endif /* TRIKIG_VBT_H */
