@@ -264,9 +264,10 @@ LIB_FILES += -lc -lnosys -lm
 default: nrf52810_xxaa
 
 # Build produkcyjny: RTT OFF (make release; wynik w _build/nrf52810_xxaa.hex)
+# '+' = przekazanie jobservera do sub-make (bez tego -j4 lamie dump pliku .in linkera).
 .PHONY: release
 release:
-	$(MAKE) TRIKIG_RTT_DIAG=0
+	+$(MAKE) --no-print-directory TRIKIG_RTT_DIAG=0
 
 # Print all targets that can be built
 help:

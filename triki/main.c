@@ -435,7 +435,8 @@ int main(void)
                  * Zero retry => zero ryzyka zamrozenia petli glownej przez BLE. */
                 if (m_conn_handle != BLE_CONN_HANDLE_INVALID) {
                     uint16_t hvx = txlen;
-                    (void)ble_nus_data_send(&m_nus, p_tx, &hvx, m_conn_handle);
+                    /* SDK ble_nus_data_send przyjmuje uint8_t* (API bez const); funkcja nie modyfikuje bufora. */
+                    (void)ble_nus_data_send(&m_nus, (uint8_t *)p_tx, &hvx, m_conn_handle);
                 }
             }
             ring_rd = (uint8_t)((ring_rd + 1) % RING_SLOTS);
