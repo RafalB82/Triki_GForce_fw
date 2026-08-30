@@ -43,6 +43,9 @@ void bb_start(void)
 
 void bb_restart(void)
 {
+    /* audyt#4 2026-08-30: jawne SDA=high — wczesniej repeated-start dzialal tylko dzieki
+     * ubocznemu efektowi bb_write_byte (release SDA przed ACK bitem). */
+    bb_high(BB_I2C_SDA_PIN);
     bb_high(BB_I2C_SCL_PIN);
     bb_low(BB_I2C_SDA_PIN);
     bb_low(BB_I2C_SCL_PIN);

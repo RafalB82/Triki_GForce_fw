@@ -12,11 +12,13 @@
 static bool reg_write(uint8_t reg, uint8_t val)
 {
     bb_start();
-    bool ok = bb_write_byte(LSM_ADDR_W);
-    ok = bb_write_byte(reg) && ok;
-    ok = bb_write_byte(val) && ok;
+    /* audyt#3 2026-08-30: abort przy pierwszym NACK (spojnie z reg_read) — zero ruchu
+     * na magistrali po bledzie adresu/rejestru. */
+    if (!bb_write_byte(LSM_ADDR_W)) { bb_stop(); return false; }
+    if (!bb_write_byte(reg))        { bb_stop(); return false; }
+    if (!bb_write_byte(val))        { bb_stop(); return false; }
     bb_stop();
-    return ok;
+    return true;
 }
 
 static bool reg_read(uint8_t reg, uint8_t *dst, uint8_t len)

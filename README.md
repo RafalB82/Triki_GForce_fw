@@ -10,9 +10,9 @@ i komendy RX. Konsument docelowy: aplikacja **Triki_G** (Flutter, D-019/D-021).
 |---|---|
 | **v19** (`trikig_triki_v19.hex`) | PRODUKCJA (end-to-end zweryfikowany: 104.0 Hz, dt 9.6 ms, skale OK) |
 | **v0.0.26** (`firmware/hex/trikig_triki_v0.0.26.hex`) | wire v2 (F1) + komendy RX (F2); sha256 `ef677b0f…` |
-| **v0.0.27** (`firmware/hex/trikig_triki_v0.0.27.hex`) | v0.0.26 + fixes z audytu 2026-08-29 (WDT 8s, BLE send one-shot/drop, static_assert V_CLAMP); sha256 `44eac963…` |
+| **v0.0.27** (`firmware/hex/trikig_triki_v0.0.27.hex`) | v0.0.26 + fixes z audytu 2026-08-29 (WDT 12s, BLE send one-shot/drop, static_assert V_CLAMP); sha256 `44eac963…` |
 | **v0.1.0** (`firmware/hex/trikig_triki_v0.1.0.hex`) | plan wdrożenia K0-K8 (WDT covers boot, IMU init fail-fast, ring_slot_t + snapshot vel/flags przy poll, dup-guard VBT, seq = każda próbka — luki informacyjne, SPEC 5.1); sha256 `bb6e1b28…` |
-| **v0.1.1** (branch `fixy`) | fixy audytu 2026-08-30: CTRL3_C 0x0C = BDU+IF_INC (0x44 ustawiał H_LACTIVE, brak BDU) + readback c3; CP delay w APP_TIMER_TICKS (jednostki app_timer2); BTN debounc+edge-detect (3 wciśnięcia wg SPEC 6); clamp isqrt (uint32 overflow @16g); app_timer_init przed BLE; licznik zadań `20 12`; `make release` (RTT OFF); hex: do wybudowania z brancha |
+| **v0.1.1** (branch `fixy`) | fixy audytu 2026-08-30: CTRL3_C 0x0C = BDU+IF_INC (0x44 ustawiał H_LACTIVE, brak BDU) + readback c3; CP delay w APP_TIMER_TICKS (jednostki app_timer2); BTN debounc+edge-detect (3 wciśnięcia wg SPEC 6); clamp isqrt (uint32 overflow @16g); app_timer_init przed BLE; licznik zadań `20 12`; `make release` (RTT OFF); runda 2: doc WDT 12s, sekcja krytyczna g_btn_presses, reg_write NACK-abort, bb_restart jawny SDA, VBT fallback kalibracji biasu ~5s; hex: do wybudowania z brancha |
 
 Semver: MAJOR=0 (beta), MINOR=protokół (wire v2 → 0.1.x docelowo), PATCH=iteracja. Tag FW w RTT + komenda `20 12`.
 

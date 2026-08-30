@@ -161,7 +161,7 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 |---|---|
 | Wejscie | surowe acc 12B z OUT 0x22 (feed w poll handler, przed ramka) |
 | Model | v = integral (LPF(acc) - bias_grav) dt; os X barbell |
-| Bias grawitacji | MA-16 ramek, aktualizowany TYLKO w bezruchu (start = kapsel lezy przy boocie, okienko kalibracji PWA) |
+| Bias grawitacji | MA-16 ramek, aktualizowany TYLKO w bezruchu (start = kapsel leży przy boocie, okienko kalibracji PWA); od 0.1.1 fallback: wymuszona kalibracja z LPF po ~5s bez bezruchu (TRIKIG_VBT_BIAS_FORCE_FRAMES) — dokładność gorsza do pierwszego spoczynku |
 | ZUPT | decay 1/64/ramke przy bezruchu (tau ~0.6s) |
 | Progi | ruch >1.60 m/s^2 (q8.8), clamp v 15.6 m/s |
 | Arytmetyka | fixed-point q8.8 (brak FPU wywolan; +448B text) |

@@ -18,6 +18,7 @@ static int32_t s_vel_q88[3];    /* q8.8 m/s */
 static uint8_t s_bias_n;
 static uint8_t s_rest_cnt;
 static bool    s_rest;
+static uint16_t s_frames;       /* licznik ramek od resetu (fallback kalibracji biasu) */
 
 /* raw i16 (1g=2048) -> q8.8 m/s^2: raw/2048*9.80665*256 = raw*1.22583 => raw*314>>8 (err 0.06%) */
 static inline int32_t acc_q88(int16_t r)
@@ -46,6 +47,7 @@ void vbt_reset(void)
     s_bias_n = 0;
     s_rest_cnt = 0;
     s_rest = false;
+    s_frames = 0;
 }
 
 static void bias_update(const int32_t a[3])
@@ -67,6 +69,8 @@ void vbt_on_frame(const uint8_t *raw12)
     memcpy(&a[0], &raw12[6], 2);
     memcpy(&a[1], &raw12[8], 2);
     memcpy(&a[2], &raw12[10], 2);
+
+    if (s_frames < 0xFFFF) s_frames++;
 
     int32_t av[3] = { acc_q88(a[0]), acc_q88(a[1]), acc_q88(a[2]) };
 
@@ -92,9 +96,17 @@ void vbt_on_frame(const uint8_t *raw12)
         bias_update(s_lpf);
         for (int i = 0; i < 3; i++)
             s_vel_q88[i] -= s_vel_q88[i] >> TRIKIG_VBT_BETA_LPF;
-    } else if (s_bias_n < TRIKIG_VBT_BIAS_MA_N) {
+    } else if (s_bias_n < TRIKIG_VBT_BIAS_MA_N && s_frames < TRIKIG_VBT_BIAS_FORCE_FRAMES) {
         /* boot: integracja wstrzymana do pierwszej pelnej kalibracji biasu (usuwa transient ~-2000 mm/s) */
     } else {
+        if (s_bias_n < TRIKIG_VBT_BIAS_MA_N) {
+            /* audyt#5 2026-08-30: ruch od startu bez ani jednej klatki spoczynku — wymus bias
+             * z aktualnego LPF, zeby velocity w ogole wystartowal. Dokladnosc gorsza do czasu
+             * pierwszego prawdziwego bezruchu (potem bias doucza sie MA-16 jak zwykle). */
+            for (int i = 0; i < 3; i++)
+                s_bias[i] = s_lpf[i];
+            s_bias_n = TRIKIG_VBT_BIAS_MA_N;
+        }
         /* v += a*dt; dt=9.6ms q16.16 = 629/2^16 */
         for (int i = 0; i < 3; i++) {
             int32_t lin = s_lpf[i] - s_bias[i];

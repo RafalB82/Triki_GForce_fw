@@ -4,7 +4,7 @@
  * Moduly: trikig_bb_i2c (I2C), trikig_lsm6dsl (IMU), trikig_board (LED/BTN/sleep/RTT),
  *          trikig_vbt (velocity side-band O-012 — wire 14B bez zmian).
  * Zachowane semantyki v19: poll 9ms -> ramka 14B -> ring -> NUS; skale CTRL1=0x44/CTRL2=0x4C.
- * v0.0.27 (audyt 2026-08-29): WDT 8s (kick w petli glownej, fault=>reset zamiast SOS-loop),
+ * v0.0.27 (audyt 2026-08-29): WDT 12s (kick w petli glownej, fault=>reset zamiast SOS-loop),
  * BLE send = jedna proba/drop (default:break — koniec nieskonczonego retry), static_assert
  * V_CLAMP vs int16_t, TODO btn_cnt, komentarz idle_secs.
  * v0.1.0 (plan 027 K1-K5): ring_slot_t struct, snapshot vel/flags przy poll (K2),
@@ -35,6 +35,7 @@
 #include "nrf_ble_qwr.h"
 #include "ble_conn_params.h"
 #include "app_timer.h"
+#include "app_util_platform.h"
 #include "nrf_drv_wdt.h"
 
 #include "trikig_board.h"
@@ -111,7 +112,7 @@ void app_error_fault_handler(uint32_t id, uint32_t pc, uint32_t info)
         rtt_diag_printf("FAULT id=%u pc=%08x", (unsigned)id, (unsigned)pc);
     }
     (void)code;   /* przy TRIKIG_RTT_DIAG=0 printf jest no-op (warning release build) */
-    /* SOS-loop bez feedu: WDT (8s) wykona reset — fault konczy sie rebootem (audyt #1). */
+    /* SOS-loop bez feedu: WDT (12s) wykona reset — fault konczy sie rebootem (audyt #1). */
     for (;;) {
         led_blink(3, 40, 40);
         nrf_delay_ms(1000);
@@ -405,8 +406,17 @@ int main(void)
             enter_system_off();
         }
 
-        if (g_btn_presses >= 3) {        /* SPEC 6: 3 wcisniecia = 2x mrug + reset licznika sleep */
-            g_btn_presses = 0;
+        /* Konsumpcja w sekcji krytycznej (audyt#2 2026-08-30): read-modify-write
+         * g_btn_presses w main przegrywal wyscig z ++ z poll handlera (zgubione wcisniecie);
+         * '-= 3' zachowuje nadmiarowe zliczenia zrobione podczas blinka. */
+        bool btn_3 = false;
+        CRITICAL_REGION_ENTER();
+        if (g_btn_presses >= 3) {
+            g_btn_presses -= 3;
+            btn_3 = true;
+        }
+        CRITICAL_REGION_EXIT();
+        if (btn_3) {                     /* SPEC 6: 3 wcisniecia = 2x mrug + reset licznika sleep */
             led_blink(2, 60, 60);
             idle_secs = 0;
         }

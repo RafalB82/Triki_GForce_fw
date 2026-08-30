@@ -6,7 +6,8 @@
  *
  * Model (O-012): v = integral a_lin dt, gdzie a_lin = LPF(acc) - bias_gravity.
  * Bezruch: ||a|-g| < 0.8 m/s^2 przez 8 ramek (NIE po osi — patrz trikig_vbt.c
- * naglowek: pułapka orientacji v0.0.22/23). Bias grawitacji: MA-16 przy kazdym becruchu.
+ * naglowek: pułapka orientacji v0.0.22/23). Bias grawitacji: MA-16 przy kazdym bezruchu;
+ * fallback 0.1.1: wymuszona kalibracja z LPF po ~5s bez bezruchu (BIAS_FORCE_FRAMES).
  * ZUPT: przy bezruchu v -> 0 (first-order decay).
  * Ograniczenie biomechaniczne: ruch barbell = os podluzna gryfu (os X ukladu).
  *
@@ -29,6 +30,9 @@
 _Static_assert(TRIKIG_VBT_V_CLAMP <= 0x7FFF,
                "V_CLAMP must fit int16_t: wire v2 packs vel as i16 (audyt 027)");
 #define TRIKIG_VBT_BIAS_MA_N       16u     /* okno MA biasu (ramki) */
+#define TRIKIG_VBT_BIAS_FORCE_FRAMES 520u  /* ~5s @104Hz (audyt#5 2026-08-30): fallback — wymuszona
+                                              * kalibracja biasu z LPF, gdy caly ten czas ruch
+                                              * (velocity inaczej nie wystartuje nigdy) */
 
 void    vbt_reset(void);                    /* zero stanu; wywolac po imu init */
 void    vbt_on_frame(const uint8_t *raw12); /* feed: 12B z OUT 0x22 (gyro6+acc6 i16LE) */
