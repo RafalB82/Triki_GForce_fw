@@ -286,6 +286,12 @@ static bool drdy_probe(void)
 static void pin_scan(void)
 {
     static const uint8_t skip[] = { 4u, 5u, 6u, 12u, 21u, 25u, 28u };
+    if (!lsm6dsl_drdy_enable(true)) {              /* 0.3.9-fix: skan pierwotnie NIE wlaczal
+                                                    * INT2_CTRL — skanowal piny przy wylaczonym
+                                                    * DRDY (wynik pusty bez wartosci) */
+        rtt_diag_printf("S2 SCAN: INT2 enable FAIL");
+        return;
+    }
     rtt_diag_printf("S2 PIN SCAN start (INT2 DRDY on)");
     for (uint8_t p = 0; p < 32; p++) {
         bool skip_pin = false;
