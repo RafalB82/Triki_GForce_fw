@@ -41,6 +41,10 @@
  * v0.3.5: DRDY na INT2 (pin 9 ukladu wg datasheet ukladu — INT1 ukladu niepolaczony,
  * dlatego probe 0.3.3/0.3.4 nie widzial krawedzi); register INT2_CTRL (0x0E); probe
  * rozszerzona: pin P0.09/P0.10 x polaryzacja (drdy_mode 1-4).
+ * v0.3.7 (log wire v2 21:42): nauka biasu gyro w quasi-bezruchu (||lin||<1.2 m/s^2,
+ * |w-wbias|<15dps, tau 0.6s) — dryf propagacji z biasu podtrzymywal blad g na progu
+ * gate'a innowacji => ZUPT nie gasil velocity przy ruchach (raczeta +250 mm/s/cykl,
+ * vel stuck ~3000); propagacja i gate na gyro skorygowanym (w - wbias).
  * v0.3.6: LSM INT2/DRDY -> P0.10 potwierdzone plyta [P] — probe probuje P0.10 pierwsza.
  * v0.3.4 (log RTT 0.3.3): (1) DWT->CYCCNT NIE ISTNIEJE na nRF52810 — wszystkie timingi
  * diag=0 i watchdog DRDY martwy; timebase -> TIMER1 @1MHz 16-bit (wrap-safe uint16, okno

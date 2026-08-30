@@ -66,6 +66,11 @@ _Static_assert(TRIKIG_VBT_V_CLAMP <= 0x7FFF,
                                               * net przeciw permanentnemu dead-lockowi gdy innowacja
                                               * > G_CORR_MAX trwale (duzy blad g, np. forced-snap w
                                               * ruchu): ~20s powrotu, po czym szybka korekcja wchodzi */
+#define TRIKIG_VBT_WBIAS_LEARN_SHIFT 6     /* nauka biasu gyro w quasi-bezruchu (audyt HW 0.3.6):
+                                              * 1/64 na ramke (tau ~0.6s); dryf propagacji z biasu
+                                              * podtrzymuje blad g na progu gate'a => ||lin|| > prog
+                                              * => ZUPT nie gasi velocity (raczeta przy ruchach) */
+#define TRIKIG_VBT_QUASI_REST_MULT 4u       /* quasi-bezruch: ||lin|| < 4x prog rest (1.2 m/s^2) */
 #define TRIKIG_VBT_DT_104HZ_Q16    630u    /* 1/104 s w q16.16 (=630.15); C5: dt=1/ODR,
                                               * wyprostowane z 629 (err 0.16%) */
 #define TRIKIG_VBT_AXIS_Q12        4096u   /* wektor osi ruchu: q12, |axis| = 4096 */
@@ -74,7 +79,7 @@ void    vbt_reset(void);                    /* zero stanu; wywolac po imu init *
 void    vbt_on_frame(const uint8_t *raw12, uint16_t dt_q16); /* feed: 12B z OUT 0x22
                                               * (gyro6+acc6 i16LE) + dt [q16.16] */
 void    vbt_set_axis(const int16_t axis_q12[3]);  /* os ruchu (normalizowana do 4096) */
-void    vbt_reset_velocity(void);           /* twardy ZUPT: v=0 (C7: gap dt > 100ms) */
+void    vbt_reset_velocity(void);           /* twardy ZUPT: v=0 (C7: gap dt > 60ms) */
 int32_t vbt_velocity_mms(void);             /* velocity na osi ruchu [mm/s] (podpisane) */
 bool    vbt_moving(void);
 uint8_t vbt_flags(void);                    /* bit0 moving, bit1 rest, bit2 g-estimated,

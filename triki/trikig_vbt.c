@@ -49,6 +49,9 @@ static bool    s_rest;
 static bool    s_gest_ok;       /* false do pierwszej kalibracji g (boot-hold / fallback) */
 static bool    s_gest_forced;   /* kalibracja g z WYMUSZENIA (fallback 5s w ruchu) — host
                                  * powinien oznaczyc poczatkowe serie jako niepewne (audyt) */
+static int32_t s_wbias[3];      /* q16.16 rad/s, estymata biasu gyro (nauka w quasi-bezruchu,
+                                 * 0.3.7: dryf z biasu podtrzymywal blad g na progu gate'a
+                                 * => raczeta velocity przy ruchach — log wire v2 21:42) */
 static uint16_t s_frames;       /* licznik ramek od resetu (fallback kalibracji) */
 
 /* raw i16 (1g=2048) -> q8.8 m/s^2: raw/2048*9.80665*256 = raw*1.22583 => raw*314>>8 (err 0.06%) */
@@ -82,6 +85,7 @@ void vbt_reset(void)
     s_rest = false;
     s_gest_ok = false;
     s_gest_forced = false;
+    memset(s_wbias, 0, sizeof(s_wbias));
     s_frames = 0;
 }
 
@@ -146,11 +150,13 @@ void vbt_on_frame(const uint8_t *raw12, uint16_t dt_q16)
     int32_t wq[3] = { (int32_t)g_raw[0] * TRIKIG_VBT_GYR_Q16_RAD_LSB,
                       (int32_t)g_raw[1] * TRIKIG_VBT_GYR_Q16_RAD_LSB,
                       (int32_t)g_raw[2] * TRIKIG_VBT_GYR_Q16_RAD_LSB };
+    /* propagacja na gyro SKORYGOWANYM o nauczony bias (0.3.7): raw - wbias */
+    int32_t we[3] = { wq[0] - s_wbias[0], wq[1] - s_wbias[1], wq[2] - s_wbias[2] };
     VBT_PROF(grav_us_max,
     {
-        int64_t cx = (int64_t)wq[1]*s_gest[2] - (int64_t)wq[2]*s_gest[1];
-        int64_t cy = (int64_t)wq[2]*s_gest[0] - (int64_t)wq[0]*s_gest[2];
-        int64_t cz = (int64_t)wq[0]*s_gest[1] - (int64_t)wq[1]*s_gest[0];
+        int64_t cx = (int64_t)we[1]*s_gest[2] - (int64_t)we[2]*s_gest[1];
+        int64_t cy = (int64_t)we[2]*s_gest[0] - (int64_t)we[0]*s_gest[2];
+        int64_t cz = (int64_t)we[0]*s_gest[1] - (int64_t)we[1]*s_gest[0];
         s_gest[0] -= (int32_t)((cx * (int64_t)dt_q16 + ((int64_t)1 << 31)) >> 32);
         s_gest[1] -= (int32_t)((cy * (int64_t)dt_q16 + ((int64_t)1 << 31)) >> 32);
         s_gest[2] -= (int32_t)((cz * (int64_t)dt_q16 + ((int64_t)1 << 31)) >> 32);
@@ -162,9 +168,9 @@ void vbt_on_frame(const uint8_t *raw12, uint16_t dt_q16)
          *    bledzie g — innowacja > 1.0 blokuje szybka sciezke, leak wyciaga stan). */
         int32_t dg[3] = { av[0] - s_gest[0], av[1] - s_gest[1], av[2] - s_gest[2] };
         int64_t pg = (int64_t)dg[0]*dg[0] + (int64_t)dg[1]*dg[1] + (int64_t)dg[2]*dg[2];
-        if (abs(wq[0]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
-            abs(wq[1]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
-            abs(wq[2]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
+        if (abs(we[0]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
+            abs(we[1]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
+            abs(we[2]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
             pg < (int64_t)TRIKIG_VBT_G_CORR_MAX * TRIKIG_VBT_G_CORR_MAX) {
             for (int i = 0; i < 3; i++)
                 s_gest[i] += dg[i] >> TRIKIG_VBT_G_CORR_SHIFT;
@@ -197,6 +203,19 @@ void vbt_on_frame(const uint8_t *raw12, uint16_t dt_q16)
             s_rest_cnt = 0;
         }
         s_rest = (s_rest_cnt >= TRIKIG_VBT_REST_FRAMES);
+
+        /* 0.3.7: nauka biasu gyro w quasi-bezruchu (||lin|| < 1.2 m/s^2 i |w-wbias| <
+         * 15 dps => raw gyro = bias; tau ~0.6s). Bez tego dryf propagacji podtrzymywal
+         * blad g na progu gate'a innowacji => ZUPT nie gasil velocity przy ruchach. */
+        int64_t pq = (int64_t)TRIKIG_VBT_REST_TH * TRIKIG_VBT_REST_TH *
+                     TRIKIG_VBT_QUASI_REST_MULT * TRIKIG_VBT_QUASI_REST_MULT;
+        if (pl < pq &&
+            abs(we[0]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
+            abs(we[1]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
+            abs(we[2]) < TRIKIG_VBT_GYR_REST_TH_Q16) {
+            for (int i = 0; i < 3; i++)
+                s_wbias[i] += (wq[i] - s_wbias[i]) >> TRIKIG_VBT_WBIAS_LEARN_SHIFT;
+        }
     });
 
     /* 6. projekcja na os ruchu -> integracja 1D */
