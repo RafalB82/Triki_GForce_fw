@@ -59,6 +59,10 @@
 - Emisja: ramka zdarzeniowa `22 02 | rep_idx16 | mcv16 | peak16 | dur16 | flags` (w v2), NIE zanieczyszcza raw.
 - **Kryterium:** live pipeline Triki_G jako ground-truth: rep on-sensor vs repy Triki_G z tej samej sesji — zgodność >= 90% count, MCV r > 0.9; potem flaga domyślna.
 - RAM: < 1KB stanów. CPU: < 2%.
+- **Podstawa (v0.3.0, plan VBT C2-C5 WDROŻONA):** gravity tracking ACC+GYRO (propagacja
+  gyro + korekcja ACC gated zamiast biasu per-os), movement-axis `dot(lin, axis)`, dt=1/ODR,
+  detektor rest 1. rzędu `||lin||<0.3`, ZUPT τ0.31s; harness offline `tools/vbt_offline`
+  (5 scenariuszy PASS: rest60/rot/rot_move/rep/rep_soft). Wejście do F3 gotowe.
 
 ### F4 — embedded features LSM6DSL (v0.2.x, tanie extras)
 - Pedometer/sig-motion/tilt/wake-up jako metadane w flags (oszczędza CPU; identyfikacja aktywności, NIE VBT).

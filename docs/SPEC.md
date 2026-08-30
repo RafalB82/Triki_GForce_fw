@@ -106,7 +106,7 @@ Ramka 14B: [0x22][0x00] [gX_l gX_h gY_l gY_h gZ_l gZ_h aX_l aX_h aY_l aY_h aZ_l 
 ```
 Ramka 19B: [0x22][0x01] [seq_l seq_h] [gyro6] [acc6] [vel_l vel_h] [flags]
            header 2B  | seq u16LE | gyro FIRST (6B) | acc (6B) | vel i16LE mm/s | flags u8
-           flags: bit0 moving, bit1 rest, bit2 bias-calibrated; vel+flags = snapshot VBT z chwili poll
+           flags: bit0 moving, bit1 rest, bit2 g-estimated (0.3.0; były: bias-calibrated); vel+flags = snapshot VBT z chwili poll
 ```
 
 **Semantyka seq (0.1.0, plan 027 K4):** licznik każdej próbki IMU przy aktywnym połączeniu —
@@ -175,22 +175,23 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 
 ---
 
-## 10.5 Modul VBT (v22, side-band O-012)
+## 10.5 Modul VBT (v0.3.0, side-band O-012; gravity tracking wg planu VBT C2-C5)
 
 **Cel:** velocity barbell na kapslu (velocity-based training) bez zmian w wire.
 
 | Element | Detal |
 |---|---|
-| Wejscie | surowe acc 12B z OUT 0x22 (feed w poll handler, przed ramka) |
-| Model | v = integral (LPF(acc) - bias_grav) dt; os X barbell |
-| Bias grawitacji | MA-16 ramek, aktualizowany TYLKO w bezruchu (start = kapsel leży przy boocie, okienko kalibracji PWA); od 0.1.1 fallback: wymuszona kalibracja z LPF po ~5s bez bezruchu (TRIKIG_VBT_BIAS_FORCE_FRAMES) — dokładność gorsza do pierwszego spoczynku |
-| ZUPT | decay 1/64/ramke przy bezruchu (tau ~0.6s) |
-| Progi | ruch >1.60 m/s^2 (q8.8), clamp v 15.6 m/s |
-| Arytmetyka | fixed-point q8.8 (brak FPU wywolan; +448B text) |
-| API | vbt_reset() po imu_init; vbt_on_frame(raw12); vbt_velocity_mms() [mm/s]; vbt_moving() |
-| Diag | RTT ~1s: `VBT v=<mm/s> mv=<0/1>` (pod TRIKIG_RTT_DIAG) — walidacja vs PWA |
-| Ograniczenia | dryf miedzy ZUPT-ami, os X only, brak fuzji gyro; walidacja terenowa przed produkcyjnym uzyciem |
-| Expose | API wewnetrzne; docelowo: pole statusu w ramce LUB profil BLE (decyzja + koordynacja PWA) |
+| Wejscie | surowe gyro+acc 12B z OUT 0x22 (feed w poll handler, przed ramka); dt = 1/ODR (parametr; C7 DRDY podmieni na mierzony) |
+| Model | gravity estimator (filtr komplementarny): propagacja gyro `dg = -(w x g)*dt` co ramke (q16.16 x q8.8, zaokraglana), korekcja ACC gated (|w| < 2 dps I innowacja < 1.0 m/s^2), renormalizacja do g; `lin = LPF(acc - g_est)` (JEDNO LPF na roznicy); `a_move = dot(lin, axis)`; `v += a_move*dt`; os ruchu default X barbell (vbt_set_axis) |
+| Bezruch | `||lin|| < 0.3 m/s^2` przez 8 ramek — detektor 1. rzedu (stara norma \|\|a\|-g\| byla 2. rzedu: dev ~ a^2/2g, slepa na wolne pushy); fallback: wymuszona kalibracja g z LPF po ~5s bez bezruchu (TRIKIG_VBT_BIAS_FORCE_FRAMES) |
+| ZUPT | decay 1/32/ramke przy bezruchu (tau ~0.31s) z min-krokiem 1 q8.8 (decay stenal przy \|v\| < 125 mm/s) |
+| Progi | clamp v 15.6 m/s; clamp normy (audyt 2026-08-30) |
+| Arytmetyka | fixed-point q8.8/q16.16 (brak FPU); 2x isqrt/ramke (rest + renorm) |
+| API | vbt_reset() po imu_init; vbt_on_frame(raw12, dt_q16); vbt_set_axis(q12[3]); vbt_velocity_mms() [mm/s]; vbt_moving(); vbt_flags() (bit2 = g-estimated) |
+| Diag | RTT ~1s: `VBT v=... mv=... dup=...` + `DIAG smpl/dup/rdrop/gap/bdrop | per min/avg/max | max acq/dsp/ble us` (pod TRIKIG_RTT_DIAG) |
+| Walidacja | harness offline `tools/vbt_offline` (5 scenariuszy syntetycznych PASS: rest60/rot/rot_move/rep/rep_soft); znane ograniczenie: wander ~±0.4 m/s przy jednoczesnej rotacji+oscylacji (adversarial, samolimitujacy, powrot do 0 po ustaniu) |
+| Ograniczenia | korekcja g tylko quasi-statyka => dryf gyro-bias przy dlugim trzymaniu (typ. 40mdps => ~2.4deg/min); os stalych w ukladzie kapsla; walidacja terenowa vs Triki_G/PWA przed produkcyjnym uzyciem |
+| Expose | API wewnetrzne; pole vel/flags wire v2 bez zmian |
 
 ---
 ## 10. Znane ograniczenia (stan v21)
