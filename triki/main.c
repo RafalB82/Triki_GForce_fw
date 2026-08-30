@@ -110,6 +110,7 @@ void app_error_fault_handler(uint32_t id, uint32_t pc, uint32_t info)
     } else {
         rtt_diag_printf("FAULT id=%u pc=%08x", (unsigned)id, (unsigned)pc);
     }
+    (void)code;   /* przy TRIKIG_RTT_DIAG=0 printf jest no-op (warning release build) */
     /* SOS-loop bez feedu: WDT (8s) wykona reset — fault konczy sie rebootem (audyt #1). */
     for (;;) {
         led_blink(3, 40, 40);
@@ -379,7 +380,9 @@ int main(void)
     APP_ERROR_CHECK(app_timer_start(m_sleep_timer, APP_TIMER_TICKS(SLEEP_TIMER_MS), NULL));
     rtt_diag_printf("S5 poll %ums ON, sleep %us", POLL_INTERVAL_MS, SLEEP_TIMEOUT_S);
 
-    uint16_t vbt_log_div = 0;
+#if TRIKIG_RTT_DIAG
+    uint16_t vbt_log_div = 0;    /* diag: dzielnik logu VBT ~1s; przy DIAG=0 nieuzywane */
+#endif
 
     /* WDT uzbrojony na starcie main (K0); tu tylko feed (fault/SOS-loop => reset). */
     for (;;) {
