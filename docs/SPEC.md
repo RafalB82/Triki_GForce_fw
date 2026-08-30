@@ -18,7 +18,7 @@
 | Flash zewn. | MX25R8035F 1MB SPI — NIE uzywany; CS **NIE jest na P0.12** (P0.12 = dzielnik baterii, zweryfikowane plyta 2026-08-30); CS/SCK/MOSI/MISO nieznane | [?] piny ze schematu |
 | Kryształ 32k | BRAK -> LFCLK = RC wewnetrzny (SRC=0, CTIV=16) | [Z] |
 | Debug | SWD pady (3V3/GND/nRESET/SWDIO/SWCLK), probe: Tigard/Win11 lub Pico+Free-DAP; RTT ch0 | [Z] |
-| Zasilanie | CR2032 3V, bez LDO — bezposrednio na VDD (pin 9); przez diode do dzielnika **100k/100k** -> wylot na P0.04/AIN2 i P0.12 (oba piny wylacznie dzielnik) | [Z] plyta 2026-08-30 |
+| Zasilanie | CR2032 3V, bez LDO — bezposrednio na VDD (pin 9); diode + rezystory do node'a baterii — **POMIAR FW 0.3.3: AIN2/P0.04 widzi ~pelne Vbat (dzielnika 2× na tej sciezce NIE ma)**; rola P0.12 do potwierdzenia miernikiem | [P] FW 0.3.3: 6595mV @ skala 2 vs real 3.308V |
 | Pomiar baterii | SAADC AIN2 (gain 1/6, ref 0.6V, FS 3.6V), srednia 4x, kalibracja offsetu przy boocie; ramka `22 04` + flags bit3 (od 0.2.0); ratio 1:1 potwierdzony, **OFFSET = Vf diody DO KALIBRACJI** | [Z] FW; Vf pending |
 
 ### Pinout uzywany przez FW
@@ -27,15 +27,15 @@
 | P0.05 | I2C SDA (bit-bang) | open-drain S0D1 + pullup wew. |
 | P0.06 | I2C SCL (bit-bang) | open-drain S0D1 + pullup wew. |
 | P0.09 | LSM INT1 | input NOPULL (nieuzywany w strategii poll; wyjscie na przyszly FIFO/DRDY) |
-| P0.04 | SAADC AIN2 — wylot dzielnika baterii (CR2032 przez diode, 100k/100k); node rowniez na P0.12 | SAADC od 0.2.0 |
-| P0.12 | wylot dzielnika baterii (drugi pin node; wylacznie dzielnik — NIE CS flasha) | nieuzywany przez FW |
+| P0.04 | SAADC AIN2 — **Vbat (bez dzielnika 2×; pomiar FW 0.3.3)** | SAADC od 0.2.0, skala 1/1 od 0.3.3 |
+| P0.12 | prawdopodobny wylot dzielnika (drugie piete "node" z earlier notki — P0.04 i P0.12 to rozne node'y, rozwiazane pomiarem FW 0.3.3); wylacznie dzielnik — NIE CS flasha | nieuzywany przez FW |
 | P0.25 | BTN do GND | input PULLUP, active-low; sense dla wybudzenia z SYSTEMOFF |
 | P0.28 | LED | output, active-low |
 
 Uwaga: P0.09/P0.10 to G-klasa INT (aktywnie-low wg schematu) — polaryzacja niezweryfikowana [?].
-Uwaga: notka IMU „SA0=P0.04 -> VDD" jest sprzeczna z dzielnikiem na P0.04 (0x6A [Z] implikuje
-SA0 wysokie; node dzielnika ~1-2V dałby 0x68) — SA0 prawdopodobnie zwiazane do VDD na plycie,
-do korekty po weryfikacji [?].
+Uwaga: notka IMU „SA0=P0.04 -> VDD" — POTWIERDZONE dwoma pomiarami: WHO_AM_I=0x6A (SA0
+wysoki; przy dzielniku ~1.65V bylby 0x68) + pomiar baterii 0.3.3 (AIN2 ~ Vbat). P0.04 = Vbat
+[?] — legenda plyty vs FW: FW ma racje (dwa niezalezne pomiary).
 
 ---
 
@@ -134,13 +134,13 @@ Zadanie: RX `20 17` (1 zadanie = 1 ramka); FW cache'uje pomiar z ticku 1s (fallb
 flags v2 (ramka 19B): bit3 = low-battery (< 2400 mV); bity 0-2 = VBT bez zmian.
 ```
 
-- Skala node->Vbat: `SCALE_NUM=2, DEN=1` (dzielnik 100k/100k = 1:1, potwierdzony plyta
-  2026-08-30) + `OFFSET_MV` (Vf diody) w trikig_batt.h.
-- **DO KALIBRACJI: tylko Vf** — porownaj FW `22 04` (= 2x node) z miernikiem na baterii:
-  `OFFSET_MV = Vbat_true − FW_mv` (kryterium F5: ±50 mV). Punkt roboczy ~12 µA przez dzielnik
-  (200k): Vf ≈ 0.5-0.55V (Si) / 0.15-0.25V (Schottky); dryf Vf z temperatura — walidacja
-  przy pelnym zakresie SOC.
-- Pobor dzielnika: (Vbat−Vf)/200k ≈ 10-12 µA ciagle (~2 mAh/rok) — pomijalne vs CR2032.
+- Skala node->Vbat: `SCALE_NUM=1, DEN=1` (od 0.3.3) — pierwszy odczyt HW pokazal 6595mV
+  przy skali 2/1 i realnych 3.308V => AIN2 = Vbat bez dzielnika 2× (wczesniejszy zapis
+  "dzielnik potwierdzony plyta" byl pomiarem zlego punktu; P0.04 ≠ P0.12).
+- **DO KALIBRACJI: OFFSET_MV** — porownaj FW `22 04` z miernikiem na baterii:
+  `OFFSET_MV = Vbat_true − FW_mv` (kryterium F5: ±50 mV). Aktualnie roznica 10.5 mV
+  (3308 vs 3297.5 po korekcie skali) => w praktyce sciezka bez istotnego Vf; OFFSET=0.
+  Jesli miernik pokaze inny stosunek niz 1:1 (nie roznice offsetowa) — zaktualizowac NUM/DEN.
 
 ---
 
@@ -207,7 +207,7 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 
 1. Duplikaty probek — ZROBIONE 0.3.1 (DRDY identyfikuje probki; memcmp = tylko diagnostyka; w fallback polling dup-guard nadal aktywny).
 2. Brak backpressure: NRF_ERROR_RESOURCES = drop ramki (brak buforowania na conn interval) [O-013 pkt 2].
-3. Pomiar baterii — ZROBIONE 0.2.0 (SAADC AIN2, dzielnik 100k/100k potwierdzony, ramka `22 04` na `20 17`, flags bit3); OFFSET Vf na egzemplarzu pending.
+3. Pomiar baterii — ZROBIONE 0.2.0/0.3.3 (SAADC AIN2 = Vbat, skala 1/1 — wczesniejsza skala 2/1 miala nieistniejacy dzielnik; ramka `22 04` na `20 17`, flags bit3; dokladnosc ~0.3% vs miernik); OFFSET_MV=0 (roznica 10.5mV — pomijalna).
 4. Brak watchdog — ZROBIONE v0.0.27 (WDT 12s, covers boot).
 5. BB I2C CPU-heavy — ZROBIONE 0.3.1 dla path danych (TWIM 400kHz + DMA; bb zostaje dla init/bus-clear/fault-recovery).
 6. FIFO LSM6DSL — ODROCZONE do decyzji ODR >104 Hz (przy 104Hz DRDY+ring16 wystarcza; bez LA bitfields FIFO niezweryfikowane [AN4650, D-016]).

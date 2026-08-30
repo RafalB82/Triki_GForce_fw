@@ -35,6 +35,9 @@
  * snapshot przy probce (K2 spojnosc, nie OR przy wysylce); flags v2 bit4 = g-forced
  * (kalibracja wymuszona w ruchu => host oznacza serie jako niepewna); IMU_ODR_HZ zamiast
  * magic 104; CI: vbt_offline w GH Actions (.github/workflows/vbt-offline.yml).
+ * v0.3.3 (walidacja HW baterii): pierwsza rzeczywista lektura — FW 6595mV @ skala 2/1 vs
+ * real 3.3080V => AIN2/P0.04 = Vbat BEZ dzielnika 2x; SCALE 1/1; skala 2/1 byla zlego
+ * punktu (P0.04 != P0.12; potwierdza tez WHO_AM_I=0x6A => SA0 wysoki). Dokladnosc ~0.3%.
  */
 #include <stdint.h>
 #include <stdbool.h>

@@ -1,10 +1,13 @@
 /**
  * trikig_batt.h - pomiar baterii CR2032 przez SAADC (F5, DSP_MAP)
  *
- * Sprzet (zweryfikowane na plycie 2026-08-30): CR2032 3V -> bezposrednio na VDD
- * (brak LDO) oraz przez diode do dzielnika rezystorowego; wylot dzielnika na
- * P0.04/AIN2 (i rownolegle P0.12 — kolizja z CS MX25R, patrz SPEC 1).
- * Pomiar = Vbat minus Vf diody (kompensacja w OFFSET_MV, kalibracja na egzemplarzu).
+ * Sprzet (POMIAR FW 0.3.3, pierwszy rzeczywisty odczyt na plycie): AIN2/P0.04 widzi
+ * ~pelne Vbat — odczyt FW ze skala 2/1 dal 6595mV przy realnych 3.308V => 2× za duzo.
+ * Wczesniejszy zapis "dzielnik 100k/100k potwierdzony plyta" byl pomiarem zlego punktu:
+ * P0.04 i P0.12 NIE sa jednym node (P0.12 moze byc prawdziwym wylotem dzielnika —
+ * do potwierdzenia miernikiem; NIE przelaczac AIN bez weryfikacji plyty).
+ * Do diody (jesli w sciezce): kompensacja w OFFSET_MV (SPEC 5.2), teraz 0 — roznica
+ * pomiaru FW vs miernik 10.5mV => w praktyce sciezka bez istotnego Vf.
  *
  * Konfiguracja: gain 1/6, ref wewnetrzny 0.6V => full-scale 3.6V > max Vbat ~3.3V.
  * Srednia software'owa z 4 probek (blokujaca, ~0.5ms — wolac max 1x/s z ticku 1s).
@@ -17,15 +20,14 @@
 #include <stdbool.h>
 
 /* --- konfiguracja pomiaru --- */
-#define TRIKIG_BATT_AIN          2u      /* AIN2 = P0.04 (wylot dzielnika) */
+#define TRIKIG_BATT_AIN          2u      /* AIN2 = P0.04 (Vbat, bez dzielnika — pomiar FW 0.3.3) */
 #define TRIKIG_BATT_SAMPLES      4u      /* srednia software'owa (blokujaca) */
 
 /* Skala node->Vbat: Vbat = node_mV * NUM / DEN + OFFSET_MV.
- * Dzielnik 100k/100k (1:1) potwierdzony plyta 2026-08-30 -> NUM=2, DEN=1.
- * OFFSET_MV = Vf diody — DO KALIBRACJI: OFFSET = Vbat(miernik) − FW_mv;
- * punkt roboczy ~12uA przez 200k: Vf ~0.5-0.55V (Si) / ~0.15-0.25V (Schottky).
- * Kryterium F5: ±50mV. */
-#define TRIKIG_BATT_SCALE_NUM    2u
+ * 0.3.3: NUM=1, DEN=1 — P0.04 = Vbat (walidacja: 6595mV @ skala 2/1 vs real 3.3080V,
+ * dokladnosc po korekcie ~0.3% — SAADC). Jesli miernik kiedys pokaze inny stosunek,
+ * zaktualizowac NUM/DEN + wpis do SPEC. Kryterium F5: ±50mV. */
+#define TRIKIG_BATT_SCALE_NUM    1u
 #define TRIKIG_BATT_SCALE_DEN    1u
 #define TRIKIG_BATT_OFFSET_MV    0
 
