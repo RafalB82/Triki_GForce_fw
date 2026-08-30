@@ -122,6 +122,19 @@ bool lsm6dsl_drdy_enable(bool on)
     return true;
 }
 
+bool lsm6dsl_drdy1_enable(bool on)
+{
+    /* INT1_CTRL (0x0D) bit0 = INT1_DRDY_XL (0.3.10: skan sprawdza oba piny INT ukladu) */
+    if (!reg_write(LSM_INT1_CTRL, on ? 0x01u : 0x00u)) return false;
+    uint8_t rb = 0;
+    if (!reg_read(LSM_INT1_CTRL, &rb, 1)) return false;
+    if (rb != (on ? 0x01u : 0x00u)) {
+        rtt_diag_printf("S2 INT1_CTRL rb=%02x MISMATCH", rb);
+        return false;
+    }
+    return true;
+}
+
 bool lsm6dsl_read_motion(uint8_t *dst12)
 {
     if (lsm6dsl_twim_init()) {

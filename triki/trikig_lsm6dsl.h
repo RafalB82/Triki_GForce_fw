@@ -43,6 +43,7 @@
 
 bool    lsm6dsl_init(void);                    /* WHO_AM_I + SW reset + config, z readbackiem RTT */
 bool    lsm6dsl_read_motion(uint8_t *dst12);   /* burst gyro(6)+acc(6) i16LE (TWIM, fallback bb) */
-bool    lsm6dsl_drdy_enable(bool on);          /* C7b: INT2_CTRL = DRDY_XL, z readbackiem */
+bool    lsm6dsl_drdy_enable(bool on);          /* INT2_CTRL = DRDY_XL, z readbackiem */
+bool    lsm6dsl_drdy1_enable(bool on);         /* INT1_CTRL = DRDY_XL, z readbackiem (scan) */
 
 #endif /* TRIKIG_LSM6DSL_H */

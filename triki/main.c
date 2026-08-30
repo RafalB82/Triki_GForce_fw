@@ -286,13 +286,18 @@ static bool drdy_probe(void)
 static void pin_scan(void)
 {
     static const uint8_t skip[] = { 4u, 5u, 6u, 12u, 21u, 25u, 28u };
-    if (!lsm6dsl_drdy_enable(true)) {              /* 0.3.9-fix: skan pierwotnie NIE wlaczal
-                                                    * INT2_CTRL — skanowal piny przy wylaczonym
-                                                    * DRDY (wynik pusty bez wartosci) */
+    /* 0.3.10: wlacz DRDY na OBU pinach INT ukladu (INT2_CTRL + INT1_CTRL) — nie wiemy
+     * ktory fizycznie jest poprowadzony do nRF; 0.3.9 skanowal tylko z INT2_CTRL. */
+    if (!lsm6dsl_drdy_enable(true)) {
         rtt_diag_printf("S2 SCAN: INT2 enable FAIL");
         return;
     }
-    rtt_diag_printf("S2 PIN SCAN start (INT2 DRDY on)");
+    if (!lsm6dsl_drdy1_enable(true)) {
+        rtt_diag_printf("S2 SCAN: INT1 enable FAIL");
+        lsm6dsl_drdy_enable(false);
+        return;
+    }
+    rtt_diag_printf("S2 PIN SCAN start (INT1+INT2 DRDY on)");
     for (uint8_t p = 0; p < 32; p++) {
         bool skip_pin = false;
         for (uint8_t i = 0; i < sizeof(skip); i++)
@@ -315,6 +320,8 @@ static void pin_scan(void)
         }
     }
     rtt_diag_printf("S2 PIN SCAN done");
+    lsm6dsl_drdy_enable(false);
+    lsm6dsl_drdy1_enable(false);
 }
 #endif
 
