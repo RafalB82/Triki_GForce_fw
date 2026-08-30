@@ -40,23 +40,29 @@ wysoki; przy dzielniku ~1.65V bylby 0x68) + pomiar baterii 0.3.3 (AIN2 ~ Vbat). 
 
 ---
 
-## 2. Architektura (v21)
+## 2. Architektura (0.3.x)
 
-Bare-metal + nRF5 SDK 17 (bez RTOS). 4 moduly + main:
+Bare-metal + nRF5 SDK 17 (bez RTOS). 7 modulow + main:
 
 ```
-main.c              boot sekwencja, BLE stack/timers, petla glowna (send + BTN + sleep)
-trikig_bb_i2c.c/h   bit-bang I2C master ~250kHz (start/restart/stop/ack/bus-clear)
-trikig_lsm6dsl.c/h  init (WHO_AM_I retry, SW reset, config) + poll OUT 0x22 (burst 12B)
+main.c              boot (WDT, DRDY probe, BLE stack/timers), petla glowna
+                    (akwizycja DRDY -> VBT -> ring, send, BTN, sleep)
+trikig_bb_i2c.c/h   bit-bang I2C master ~250kHz (init/bus-clear/fault-recovery)
+trikig_lsm6dsl.c/h  init (WHO_AM_I retry, SW reset, config readback) + read OUT 0x22
+                    (TWIM 400kHz z fallbackiem bb) + DRDY enable (INT2_CTRL)
+trikig_diag.c/h     instrumentacja: liczniki dropow, dt min/avg/max, timingi TIMER1
+trikig_vbt.c/h      VBT DSP: gravity tracking, movement-axis velocity (patrz SPEC 10)
+trikig_batt.c/h     SAADC bateria CR2032 (SPEC 5.2)
 trikig_board.c/h    LED/BTN/SYSTEMOFF + rtt_diag_printf (makro pod TRIKIG_RTT_DIAG)
 ```
 
 ### Przeplyw danych (jeden kierunek, SPSC)
 ```
-INT1 DRDY (LSM6DSL INT1_CTRL=DRDY_XL) -> GPIOTE ISR (timestamp DWT) 
+INT2 DRDY (LSM6DSL INT2_CTRL=DRDY_XL, P0.10) -> GPIOTE ISR (timestamp TIMER1 @1MHz)
   -> petla glowna: lsm6dsl_read_motion() [TWIM 400kHz, fallback BB I2C, 12B z 0x22]
-  -> ramka 14B [0x22,0x00 | gyro6 | acc6] -> ring[16] (drop najnowszej przy pelnym)
-     -> ble_nus_data_send (14B/notify) -> PWA (WebBLE)
+  -> VBT on-frame (dt = t[n]-t[n-1]) -> ramka v1 14B / v2 19B -> ring[16]
+     -> ble_nus_data_send -> PWA (WebBLE)
+  fallback (watchdog 30ms): poll 9ms z dup-guardem
 ```
 
 ### Kolekcja (od 0.3.1)
@@ -108,8 +114,8 @@ Konsumenci: **TYLKO Triki_G** (D-019/D-021 — PWA/WebBLE wycofane calkowicie, n
 
 ```
 Ramka 14B: [0x22][0x00] [gX_l gX_h gY_l gY_h gZ_l gZ_h aX_l aX_h aY_l aY_h aZ_l aZ_h]
-           header 2B    | gyro FIRST (6B)                  | acc (6B)                         |
-           wszystkie i16 LE, raw z sensora (MSB-first w bajtach parami)
+           header 2B    | gyro FIRST (6B)                  | acc (6B)
+           wszystkie wielobajtowe pola i16 LE (LSB pierwszy), raw z sensora bez konwersji
 ```
 
 ### 5.1 wire v2 (0.1.0, przełączalny komendą `20 11 01`, powrót `20 11 00`)
@@ -117,7 +123,7 @@ Ramka 14B: [0x22][0x00] [gX_l gX_h gY_l gY_h gZ_l gZ_h aX_l aX_h aY_l aY_h aZ_l 
 ```
 Ramka 19B: [0x22][0x01] [seq_l seq_h] [gyro6] [acc6] [vel_l vel_h] [flags]
            header 2B  | seq u16LE | gyro FIRST (6B) | acc (6B) | vel i16LE mm/s | flags u8
-           flags: bit0 moving, bit1 rest, bit2 g-estimated (0.3.0), bit3 low-battery (od 0.3.2 snapshot przy próbce, nie OR przy wysyłce), bit4 g-forced = kalibracja g wymuszona po ~5s bez bezruchu → początkowe serie niepewne (0.3.2); vel+flags = snapshot VBT z chwili próbki
+           flags (u8): bit0 moving, bit1 rest, bit2 g-estimated (0.3.0), bit3 low-battery (0.3.2, snapshot przy próbce), bit4 g-forced — kalibracja g wymuszona po ~5s bez bezruchu → początkowe serie niepewne (0.3.2); bity 5-7 zarezerwowane. vel+flags = snapshot VBT z chwili próbki
 ```
 
 **Semantyka seq (0.1.0, plan 027 K4):** licznik każdej próbki IMU przy aktywnym połączeniu —
@@ -133,7 +139,7 @@ Brak połączenia BLE = brak inkrementacji (to "nie zbieramy", nie drop).
 ```
 Ramka 4B: [0x22][0x04] [mv_l mv_h]     bat u16LE [mV]; 0 = pomiar niemozliwy
 Zadanie: RX `20 17` (1 zadanie = 1 ramka); FW cache'uje pomiar z ticku 1s (fallback: pomiar na zadanie).
-flags v2 (ramka 19B): bit3 = low-battery (< 2400 mV); bity 0-2 = VBT bez zmian.
+flags v2 (ramka 19B): bit3 = low-battery (< 2400 mV, snapshot przy próbce); bity 0-4 = VBT (SPEC 10).
 ```
 
 - Skala node->Vbat: `SCALE_NUM=1, DEN=1` (od 0.3.3) — pierwszy odczyt HW pokazal 6595mV
@@ -184,20 +190,18 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 
 ---
 
----
-
-## 10.5 Modul VBT (v0.3.0, side-band O-012; gravity tracking wg planu VBT C2-C5)
+## 10. Modul VBT (v0.3.0, side-band O-012; gravity tracking wg planu VBT C2-C5)
 
 **Cel:** velocity barbell na kapslu (velocity-based training) bez zmian w wire.
 
 | Element | Detal |
 |---|---|
-| Wejscie | gyro+acc 12B z OUT 0x22, odczyt w main loop wyzwalany DRDY (INT1 -> GPIOTE, timestamp w ISR); TWIM 400kHz + fallback bb; dt = t[n]-t[n-1] (clamp 4-40ms, `dt_faults`, gap>100ms => twardy ZUPT); fallback polling 9ms |
+| Wejscie | gyro+acc 12B z OUT 0x22, odczyt w main loop wyzwalany DRDY (INT2/P0.10 -> GPIOTE, timestamp w ISR); TWIM 400kHz + fallback bb; dt = t[n]-t[n-1] (clamp 4-40ms, `dt_faults`, gap>60ms (RTC1) => twardy ZUPT); fallback polling 9ms |
 | Model | gravity estimator (filtr komplementarny): propagacja gyro `dg = -(w x g)*dt` co ramke (q16.16 x q8.8, zaokraglana), **na gyro skorygowanym o nauczony bias** (0.3.7); korekcja ACC gated (**|w-wbias| < 15 dps** — gate NIE moze byc ponizej spec biasu gyro ±5 dps; 0.3.4 lekcja) I innowacja < 1.0 m/s^2 + powolny leak 1/2048 zawsze (net dead-lockow), renormalizacja do g; **nauka biasu gyro w pelnym bezruchu** (s_rest I |w-wbias| < 5 dps, tau 0.6s; 0.3.7 uczyla w quasi-rest i pochlaniala wolne rotacje => wbias zatruty => rampa 15054 — log 22:22, repro `slowrot`; 0.3.9 fix); `lin = LPF(acc - g_est)` (JEDNO LPF na roznicy); `a_move = dot(lin, axis)`; `v += a_move*dt`; os ruchu default X barbell (vbt_set_axis) |
 | Bezruch | `||lin|| < 0.3 m/s^2` przez 8 ramek — detektor 1. rzedu (stara norma \|\|a\|-g\| byla 2. rzedu: dev ~ a^2/2g, slepa na wolne pushy); fallback: wymuszona kalibracja g z LPF po ~5s bez bezruchu (TRIKIG_VBT_BIAS_FORCE_FRAMES) |
 | ZUPT | decay 1/32/ramke przy bezruchu (tau ~0.31s) z min-krokiem 1 q8.8 (decay stenal przy \|v\| < 125 mm/s) |
 | Progi | clamp v 15.6 m/s; clamp normy (audyt 2026-08-30) |
-| Arytmetyka | fixed-point q8.8/q16.16 (brak FPU); 2x isqrt/ramke (rest + renorm) |
+| Arytmetyka | fixed-point q8.8/q16.16 (brak FPU); 1x isqrt/ramke (renorm; detektor rest i gate innowacji na kwadratach) |
 | API | vbt_reset() po imu_init; vbt_on_frame(raw12, dt_q16); vbt_set_axis(q12[3]); vbt_velocity_mms() [mm/s]; vbt_moving(); vbt_flags() (bit2 = g-estimated) |
 | Diag | RTT ~1s: `VBT v=... mv=... dup=...` + `DIAG drdy=... smpl/dup/rdrop/gap/bdrop | dtf/fb/twi/sadc | dt min/avg/max | max acq/dsp/g/lin/v/ble us` (pod TRIKIG_RTT_DIAG); profil DSP gravity/linear/velocity us pod TRIKIG_VBT_PROFILE |
 | Walidacja | harness offline `tools/vbt_offline` (**6 scenariuszy PASS**) + replay realnych logów nRF Connect (`nrflog2raw.py | vbt_offline stdin`): rest 3.5s ✓, ruchy v1 22s (max 835 mm/s, koniec v=0) ✓, ruchy wire v2 14s (porownanie FW-vs-replay: FW stuck ~3000 z bledem g z historii -> 0.3.7 nauka biasu: replay ±675, koniec +238) ✓ + **[P] walidacja RTT 0.3.4: bursty ruchow na urzadzeniu — v ±100-500 mm/s, powrot do 0**; znane ograniczenie: wander ~±0.4 m/s przy jednoczesnej rotacji+oscylacji (adversarial, samolimitujacy) |
@@ -205,7 +209,7 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 | Expose | API wewnetrzne; pole vel/flags wire v2 bez zmian |
 
 ---
-## 10. Znane ograniczenia (stan 0.3.1)
+## 11. Znane ograniczenia (stan 0.3.11)
 
 1. Duplikaty probek — ZROBIONE 0.3.1 (DRDY identyfikuje probki; memcmp = tylko diagnostyka; w fallback polling dup-guard nadal aktywny).
 2. Brak backpressure: NRF_ERROR_RESOURCES = drop ramki (brak buforowania na conn interval) [O-013 pkt 2].
@@ -221,7 +225,7 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 8. m_stream_on zawsze true po starcie (init-komenda tylko potwierdza).
 9. v21/v22 bez logow PWA i testow terenowych (produkcja pozostaje v19; v21 boot zielony).
 
-## 11. Roadmap rozwoju (po D-019: Triki_G primary, swoboda hardware)
+## 12. Roadmap rozwoju (po D-019: Triki_G primary, swoboda hardware)
 
 1. Test v21/v22 (kryteria: sekcja 9) -> promocja produkcji; walidacja VBT vs Triki_G.
 2. **Wire v2 (przelaczalny, koordynacja z Triki_G):** FW-side sample counter / timestamp ms (Android timestampy burstowe: dt 0..51ms), velocity (juz liczone w v22), bateria; tryb legacy 14B zostaje. MECHANIZM (decyzja Rafała 2026-08-29): rozpoznanie wersji przez KOMENDĘ RX po connect (aplikacja przełącza tryb), bez osobnej charakterystyki. Propozycja formatu (do ustalenia z Triki_G przy implementacji): `20 11 01` = wire v2 on, `20 11 00` = legacy, `20 12` = FW info (wersja/wiecej); komenda FW_INFO przed wlaczeniem v2 jako handshake.

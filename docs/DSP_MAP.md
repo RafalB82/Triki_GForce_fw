@@ -16,27 +16,27 @@
 | RAM budżet | SD S112 ~5.5K + stack/heap 4K + bss 3.4K (v0.0.22) => wolne ~10K | stany DSP zmieszczą się; bez alokacji dynamicznych |
 | Flash budżet | 24K/192K użyte | zapas ogromny — kod algorytmów bez presji |
 | Zegar | LFCLK **RC** (brak 32k XTAL), dryf ±1-2% typ. | timestamps FW = licznik próbek + kompensacja w Triki_G (regresja dt vs zegar telefonu); NIE absolutny czas |
-| CPU zajęte | BB I2C burst 12B @111Hz ~ 8-11% CPU | zostaje ~85% na DSP; TWIM/FIFO (F-poz.) odda większość |
+| CPU zajęte | **TWIM 400kHz + DRDY 104Hz (0.3.11 [P])**: DSP ~224us worst => ~2% CPU; acq ~60-600us | zostaje ~90%+ na DSP; FIFO odroczone (ODR >104 Hz) |
 | IMU | LSM6DSL: acc/gyro 104-6.6kHz, **BRAK fusion/kwaternionów** (to ma BHI385) | orientacja = heurystyki 1D/2D + HPF; full AHRS odpada |
 | IMU embedded | pedometer, tilt, significant-motion, wake-up, free-fall, HPF acc, FIFO, timestamp (AN+datasheet przed implementacją — D-017) | darmowe na sensorze — użyć zamiast liczyć na MCU |
-| Energia | poll 111Hz BB I2C + adv — mierzony dopiero F5 | on-demand ODR + INT1 docelowo |
-| Protokół | wire v1 14B zamrożony jako domyślny | nowe dane tylko w wire v2 (przełączanym komendą, D-019) |
+| Energia | **DRDY 104Hz (INT2/P0.10) + TWIM 400kHz [P] 0.3.11** — brak pollingu 111Hz | ODR on-demand + sleep między próbkami = F7 |
+| Protokół | wire v1 14B domyślny po boot | wire v2 komendą `20 11 01` (seq+vel+flags); nowe dane tylko v2 (D-019) |
 
 ## 2. Co to pozycjonuje (skala rozwiązań)
 
 | Funkcja | Stock Zabka | TrikiG (ta mapa) | BHI385+nRF52840 |
 |---|---|---|---|
 | raw stream 14B | TAK | TAK (v1) | TAK (14B QUAT) |
-| sample counter FW | NIE | **F1** | TAK |
-| velocity na urządzeniu | NIE | **F1/F3** (1D -> 3D) | TAK (Faza C/B) |
-| bias grawitacji | NIE | **jest (v0.0.22)** | TAK (fusion) |
+| sample counter FW | NIE | **F1 TAK** (seq w wire v2) | TAK |
+| velocity na urządzeniu | NIE | **F1 TAK** (wire v2 vel; gravity tracking 0.3.x) | TAK (Faza C/B) |
+| gravity tracking ACC+GYRO | NIE | **TAK (0.3.x, ACC+GYRO komplementarny)** | TAK (fusion) |
 | detekcja repa/faz | NIE | **F3** (velocity-based) | TAK (pipeline) |
 | MCV/peak per rep | NIE | **F3** | TAK |
 | orientacja/kwaterniony | NIE | NIE (heurystyki max) | TAK (SensorAPI) |
-| konfiguracja z aplikacji | NIE | **F2** (komendy RX) | TAK |
-| bateria/status | NIE | **F5** | TAK |
+| konfiguracja z aplikacji | NIE | **F2 TAK** (20 10-17: wire/info/stream/sleep/batt) | TAK |
+| bateria/status | NIE | **F5 TAK** (22 04, skala 1/1 [P]) | TAK |
 | offline-record + sync | NIE (zapis szyfrowany) | **F6** (MX25R 1MB) | TAK |
-| energy-aware (INT1/ODR) | NIE | **F7** | TAK |
+| energy-aware (INT2/DRDY + TWIM) | NIE | **F7 TAK** (0.3.11 [P]) | TAK |
 
 ## 3. Mapa wdrożenia (fazy, semver wg D-020)
 
@@ -59,10 +59,11 @@
 - Emisja: ramka zdarzeniowa `22 02 | rep_idx16 | mcv16 | peak16 | dur16 | flags` (w v2), NIE zanieczyszcza raw.
 - **Kryterium:** live pipeline Triki_G jako ground-truth: rep on-sensor vs repy Triki_G z tej samej sesji — zgodność >= 90% count, MCV r > 0.9; potem flaga domyślna.
 - RAM: < 1KB stanów. CPU: < 2%.
-- **Podstawa (v0.3.0, plan VBT C2-C5 WDROŻONA):** gravity tracking ACC+GYRO (propagacja
-  gyro + korekcja ACC gated zamiast biasu per-os), movement-axis `dot(lin, axis)`, dt=1/ODR,
-  detektor rest 1. rzędu `||lin||<0.3`, ZUPT τ0.31s; harness offline `tools/vbt_offline`
-  (5 scenariuszy PASS: rest60/rot/rot_move/rep/rep_soft). Wejście do F3 gotowe.
+- **Podstawa (v0.3.11, plan VBT C1-C11 WDROŻONA + [P] zwalidowana na sprzęcie):** gravity
+  tracking ACC+GYRO (propagacja gyro + korekcja ACC gated + nauka biasu), movement-axis
+  `dot(lin, axis)`, dt z timestampów DRDY (TIMER1), detektor rest 1. rzędu `||lin||<0.3`,
+  ZUPT τ0.31s; akwizycja DRDY/TWIM; harness offline `tools/vbt_offline` (7 scenariuszy PASS)
+  + replay realnych logów (`nrflog2raw.py`). Wejście do F3 gotowe.
 
 ### F4 — embedded features LSM6DSL (v0.2.x, tanie extras)
 - Pedometer/sig-motion/tilt/wake-up jako metadane w flags (oszczędza CPU; identyfikacja aktywności, NIE VBT).

@@ -60,8 +60,21 @@ Semver: MAJOR=0 (beta), MINOR=protokół (wire v2 → 0.1.x docelowo), PATCH=ite
 triki/               źródła (main.c + moduły trikig_*) + Makefile + linker script
   config/            sdk_config.h (LFCLK=RC — kapsel nie ma kryształu 32k)
 tools/               setup środowiska
-docs/                SPEC.md (kontrakt wire + roadmapa DSP_MAP)
-firmware/hex/        release hexy (wersjonowane ręcznie; build-artefakty nie committowane)
+tools/vbt_offline/   harness offline VBT (7 scenariuszy) + replay logów nRF Connect
+docs/                SPEC.md (kontrakt wire + known-issues) + DSP_MAP.md (mapa DSP)
+firmware/hex/        hexy wersjonowane ręcznie (`_rtt` = dev RTT=1; release na zamówienie)
+.github/workflows/   CI: harness VBT przy push/PR (+ build FW gdy SDK dostępne)
+```
+
+## Narzędzia walidacyjne (od 0.3.x)
+
+```bash
+# regresja VBT bez sprzętu (host cc, kompiluje triki/trikig_vbt.c 1:1 z FW):
+tools/vbt_offline/build.sh && tools/vbt_offline/vbt_offline all
+
+# replay realnego loga nRF Connect (wire v1 14B lub v2 19B) przez FW VBT:
+python3 tools/vbt_offline/nrflog2raw.py "Log 2026-08-30 22_54_29.txt" | tools/vbt_offline/vbt_offline stdin
+# kolumny: frame;v_new_mm_s;v_old_mm_s(v0.2.0 ref);flags
 ```
 
 ## Procesowe (D-017)
