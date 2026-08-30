@@ -41,6 +41,10 @@
  * v0.3.5: DRDY na INT2 (pin 9 ukladu wg datasheet ukladu — INT1 ukladu niepolaczony,
  * dlatego probe 0.3.3/0.3.4 nie widzial krawedzi); register INT2_CTRL (0x0E); probe
  * rozszerzona: pin P0.09/P0.10 x polaryzacja (drdy_mode 1-4).
+ * v0.3.8: probe DRDY miala bug licznika — FIFO timestampow 4 sloty wypelnialo sie w
+ * 100ms zanim licznik doszedl do progu 5 krawedzi => probe NIGDY nie miala szansy
+ * przejsc (od 0.3.1; nakladalo sie na zly register INT1/INT2). Teraz: dedykowany
+ * licznik krawedzi w probe (s_probe_cnt), FIFO startuje czyste.
  * v0.3.7 (log wire v2 21:42): nauka biasu gyro w quasi-bezruchu (||lin||<1.2 m/s^2,
  * |w-wbias|<15dps, tau 0.6s) — dryf propagacji z biasu podtrzymywal blad g na progu
  * gate'a innowacji => ZUPT nie gasil velocity przy ruchach (raczeta +250 mm/s/cykl,
@@ -204,6 +208,10 @@ APP_TIMER_DEF(m_poll_timer);
 
 static volatile uint32_t s_drdy_ts[DRDY_TS_SLOTS];   /* FIFO timestampow (ISR pisze, main czyta) */
 static volatile uint8_t  s_drdy_wr = 0, s_drdy_rd = 0;
+static volatile uint16_t s_probe_cnt = 0;            /* licznik krawedzi probe (0.3.8: FIFO 4 sloty
+                                                     * wypelnialo sie w 100ms zanim licznik doszedl
+                                                     * do progu 5 — probe NIGDY nie mogla przejsc) */
+static volatile bool     s_probing = false;
 static volatile uint8_t  s_fallback_req = 0;         /* zadania watchdog/poll -> main (single-producer) */
 static uint32_t s_last_sample_cyc = 0;               /* TIMER1 us @ ostatniej probki (watchdog DRDY) */
 static uint32_t s_last_rtc = 0;                      /* RTC1 tick @ ostatniej probki (detekcja gapow > 65.5ms okna TIMER1) */
@@ -214,6 +222,10 @@ static bool     s_prev_ts_valid = false;
 static void drdy_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action)
 {
     (void)pin; (void)action;
+    if (s_probing) {
+        if (s_probe_cnt < 0xFFFF) s_probe_cnt++;     /* probe: licz krawedzie, FIFO nieistotne */
+        return;
+    }
     uint8_t wr = s_drdy_wr;
     uint8_t next = (uint8_t)((wr + 1) % DRDY_TS_SLOTS);
     if (next != s_drdy_rd) {
@@ -233,22 +245,26 @@ static bool drdy_probe(void)
     if (!lsm6dsl_drdy_enable(true)) return false;   /* I2C padl — polling tez nie zyje */
     for (uint8_t pi = 0; pi < 2; pi++) {
         for (uint8_t pol = 0; pol < 2; pol++) {
-            s_drdy_wr = s_drdy_rd = 0;
+            s_probe_cnt = 0;
+            s_probing = true;
             nrf_drv_gpiote_in_config_t cfg = NRFX_GPIOTE_CONFIG_IN_SENSE_LOTOHI(true);
             cfg.sense = pols[pol];
             if (nrf_drv_gpiote_in_init(pins[pi], &cfg, drdy_handler) != NRF_SUCCESS) {
+                s_probing = false;
                 lsm6dsl_drdy_enable(false);
                 return false;
             }
             nrf_drv_gpiote_in_event_enable(pins[pi], true);
             nrf_delay_ms(100);                       /* ~10 krawedzi @104Hz */
-            uint8_t edges = (uint8_t)(s_drdy_wr - s_drdy_rd);
+            s_probing = false;
+            uint16_t edges = s_probe_cnt;            /* 0.3.8: dedykowany licznik (FIFO 4 < prog 5) */
             if (edges >= 5) {
                 g_diag.drdy_mode = (uint8_t)(pi * 2 + pol + 1);   /* 1/2 = P0.10 rising/falling
                                                                      (potwierdzony), 3/4 = P0.09 r/f */
                 rtt_diag_printf("S2 DRDY ok pin=P0.%02u pol=%u edges=%u",
                                 pins[pi], pol, edges);
-                return true;
+                return true;                             /* handler juz nie pushuje (s_probing=false);
+                                                            FIFO startuje czyste z petli glownej */
             }
             nrf_drv_gpiote_in_event_disable(pins[pi]);
             nrf_drv_gpiote_in_uninit(pins[pi]);
