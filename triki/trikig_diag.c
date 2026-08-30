@@ -1,0 +1,46 @@
+/**
+ * trikig_diag.c - instrumentacja (plan VBT C1), patrz trikig_diag.h.
+ */
+#include "trikig_diag.h"
+#if TRIKIG_RTT_DIAG
+#include "SEGGER_RTT.h"
+#endif
+
+trikig_diag_t g_diag;
+
+void diag_init(void)
+{
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+void diag_period_us(uint16_t us)
+{
+    if (us == 0) return;                        /* pierwszy pomiar / wrap — pomin */
+    if (g_diag.per_min_us == 0 || us < g_diag.per_min_us) g_diag.per_min_us = us;
+    if (us > g_diag.per_max_us) g_diag.per_max_us = us;
+    if (g_diag.per_avg_us == 0) {
+        g_diag.per_avg_us = us;
+    } else {
+        int32_t d = (int32_t)us - (int32_t)g_diag.per_avg_us;
+        g_diag.per_avg_us = (uint16_t)((int32_t)g_diag.per_avg_us + (d >> 5));
+    }
+}
+
+#if TRIKIG_RTT_DIAG
+void diag_print(void)
+{
+    SEGGER_RTT_printf(0, "DIAG smpl=%u dup=%u rdrop=%u gap=%u bdrop=%u | per %u/%u/%u us",
+                      (unsigned)g_diag.imu_samples, (unsigned)g_diag.imu_dups,
+                      (unsigned)g_diag.ring_drops, (unsigned)g_diag.seq_gaps,
+                      (unsigned)g_diag.ble_drops,
+                      (unsigned)g_diag.per_min_us, (unsigned)g_diag.per_avg_us,
+                      (unsigned)g_diag.per_max_us);
+    SEGGER_RTT_WriteString(0, "\r\n");
+    SEGGER_RTT_printf(0, "DIAG max acq=%u dsp=%u ble=%u us",
+                      (unsigned)g_diag.acq_us_max, (unsigned)g_diag.dsp_us_max,
+                      (unsigned)g_diag.ble_us_max);
+    SEGGER_RTT_WriteString(0, "\r\n");
+}
+#endif

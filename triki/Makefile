@@ -60,6 +60,7 @@ SRC_FILES += \
   $(PROJ_DIR)/trikig_bb_i2c.c \
   $(PROJ_DIR)/trikig_lsm6dsl.c \
   $(PROJ_DIR)/trikig_board.c \
+  $(PROJ_DIR)/trikig_diag.c \
   $(PROJ_DIR)/trikig_vbt.c \
   $(PROJ_DIR)/trikig_batt.c \
   $(SDK_ROOT)/external/segger_rtt/SEGGER_RTT.c \

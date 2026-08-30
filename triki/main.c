@@ -42,6 +42,7 @@
 #include "nrf_drv_wdt.h"
 
 #include "trikig_board.h"
+#include "trikig_diag.h"
 #include "trikig_vbt.h"
 #include "trikig_batt.h"
 #include "trikig_version.h"
@@ -97,6 +98,8 @@ static volatile uint8_t  m_wire_mode = 1;    /* 1 = legacy 14B (default), 2 = v2
 static uint16_t          m_sample_seq = 0;
 static uint8_t           s_prev_raw[12] = {0};   /* K3: detekcja duplikatu (memcmp) */
 static volatile uint16_t s_dup_count = 0;        /* K3 diag: licznik duplikatow */
+static bool     s_exp_valid = false;             /* C1: oczekiwany seq przy konsumpcji ringu */
+static uint16_t s_exp_seq = 0;
 static volatile uint8_t  g_info_req = 0;         /* licznik zadan FW info (20 12); set: SWI, consume: main (audyt 2026-08-30) */
 static volatile uint8_t  g_batt_req = 0;         /* licznik zadan baterii (20 17); ten sam wzorzec co g_info_req */
 static volatile uint16_t g_batt_mv  = 0;         /* ostatni pomiar [mV]; 0 = brak (producent: sleep tick, konsument: main) */
@@ -153,6 +156,8 @@ static void btn_sample(void)                    /* poll timer context (9ms) */
 /* ---- poll: IMU OUT -> ramka -> ring (app_timer context) ---- */
 APP_TIMER_DEF(m_poll_timer);
 
+static uint32_t s_last_fresh_cyc = 0;   /* DWT @ ostatniej swiezej probki (C1: okres probkowania) */
+
 static void poll_timeout_handler(void * p_context)
 {
     (void)p_context;
@@ -160,24 +165,39 @@ static void poll_timeout_handler(void * p_context)
     if (!m_imu_ok) return;
     if (m_conn_handle == BLE_CONN_HANDLE_INVALID) return;
 
+    uint32_t t0 = diag_cyc();
     uint8_t raw[12];
     if (!lsm6dsl_read_motion(raw)) return;
+    diag_max16(&g_diag.acq_us_max, diag_cyc_us(diag_cyc() - t0));   /* C1: czas I2C burst 12B */
 
     uint16_t seq = m_sample_seq++;               /* K4: kazda probka, nawet dropnieta */
 
     /* K3: duplikat (timer 9ms vs ODR 104Hz) nie wchodzi do calkowania VBT */
     bool is_dup = (memcmp(raw, s_prev_raw, sizeof(raw)) == 0);
     memcpy(s_prev_raw, raw, sizeof(raw));
-    if (is_dup && s_dup_count < 0xFFFF) s_dup_count++;
+    if (is_dup) {
+        if (s_dup_count < 0xFFFF) s_dup_count++;
+        g_diag.imu_dups++;
+    } else {
+        uint32_t now = diag_cyc();
+        diag_period_us(diag_cyc_us(now - s_last_fresh_cyc));   /* C1: min/max/avg okresu */
+        s_last_fresh_cyc = now;
+        g_diag.imu_samples++;
+    }
 
     /* K5: VBT liczony NIEZALEZNIE od stanu ringu BLE (backpressure nie zatrzymuje calkowania) */
     if (!is_dup) {
+        t0 = diag_cyc();
         vbt_on_frame(raw);
+        diag_max16(&g_diag.dsp_us_max, diag_cyc_us(diag_cyc() - t0));   /* C1: czas DSP/VBT */
     }
 
     uint8_t slot = ring_wr;
     uint8_t next = (uint8_t)((slot + 1) % RING_SLOTS);
-    if (next == ring_rd) return;                 /* pelny ring -> drop ramki BLE; seq juz poszedl (K4) */
+    if (next == ring_rd) {
+        g_diag.ring_drops++;                     /* C1: drop ramki BLE; seq juz poszedl (K4) */
+        return;
+    }
 
     memcpy(ring[slot].raw, raw, sizeof(raw));
     ring[slot].seq     = seq;
@@ -220,6 +240,7 @@ static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context)
         case BLE_GAP_EVT_CONNECTED:
             m_conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
             idle_secs = 0;
+            s_exp_valid = false;                 /* C1: nowa sesja liczenia luk seq */
             nrf_ble_qwr_conn_handle_assign(&m_qwr, m_conn_handle);
             break;
         case BLE_GAP_EVT_DISCONNECTED:
@@ -351,6 +372,7 @@ int main(void)
     nrf_drv_wdt_enable();
 
     rtt_diag_printf("S1 main enter " TRIKIG_FW_TAG);
+    diag_init();                                 /* C1: DWT CYCCNT (timingi acq/dsp/ble + okres probki) */
     led_blink(1, 40, 80);
     nrf_delay_ms(700);
 
@@ -458,6 +480,13 @@ int main(void)
         while (ring_rd != ring_wr) {
             uint8_t slot = ring_rd;
 
+            /* C1: luki seq widziane przez konsumenta (drop ringu = gap zgodnie z kontraktem 5.1) */
+            if (s_exp_valid && ring[slot].seq != s_exp_seq) {
+                g_diag.seq_gaps += (uint16_t)(ring[slot].seq - s_exp_seq);
+            }
+            s_exp_seq = (uint16_t)(ring[slot].seq + 1);
+            s_exp_valid = true;
+
             if (m_conn_handle != BLE_CONN_HANDLE_INVALID && m_stream_on) {
                 uint8_t txbuf[FRAME_V2_SIZE];
                 const uint8_t *p_tx;
@@ -483,8 +512,11 @@ int main(void)
                  * Zero retry => zero ryzyka zamrozenia petli glownej przez BLE. */
                 if (m_conn_handle != BLE_CONN_HANDLE_INVALID) {
                     uint16_t hvx = txlen;
+                    uint32_t t1 = diag_cyc();
                     /* SDK ble_nus_data_send przyjmuje uint8_t* (API bez const); funkcja nie modyfikuje bufora. */
-                    (void)ble_nus_data_send(&m_nus, (uint8_t *)p_tx, &hvx, m_conn_handle);
+                    uint32_t err = ble_nus_data_send(&m_nus, (uint8_t *)p_tx, &hvx, m_conn_handle);
+                    diag_max16(&g_diag.ble_us_max, diag_cyc_us(diag_cyc() - t1));   /* C1 */
+                    if (err != NRF_SUCCESS) g_diag.ble_drops++;                     /* C1: drop send-path */
                 }
             }
             ring_rd = (uint8_t)((ring_rd + 1) % RING_SLOTS);
@@ -492,6 +524,7 @@ int main(void)
             if (++vbt_log_div >= 104) {          /* ~1s: velocity do walidacji vs PWA */
                 vbt_log_div = 0;
                 rtt_diag_printf("VBT v=%d mm/s mv=%u dup=%u", (int)vbt_velocity_mms(), (unsigned)vbt_moving(), (unsigned)s_dup_count);
+                diag_print();                    /* C1: liczniki dropow + okresy + timingi */
             }
 #endif
         }
