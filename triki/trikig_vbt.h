@@ -68,6 +68,7 @@ void    vbt_reset(void);                    /* zero stanu; wywolac po imu init *
 void    vbt_on_frame(const uint8_t *raw12, uint16_t dt_q16); /* feed: 12B z OUT 0x22
                                               * (gyro6+acc6 i16LE) + dt [q16.16] */
 void    vbt_set_axis(const int16_t axis_q12[3]);  /* os ruchu (normalizowana do 4096) */
+void    vbt_reset_velocity(void);           /* twardy ZUPT: v=0 (C7: gap dt > 100ms) */
 int32_t vbt_velocity_mms(void);             /* velocity na osi ruchu [mm/s] (podpisane) */
 bool    vbt_moving(void);
 uint8_t vbt_flags(void);                    /* bit0 moving, bit1 rest, bit2 g-estimated */

@@ -23,6 +23,12 @@
  * gyro + korekcja ACC gated |w|/innowacja), movement-axis (default X, vbt_set_axis),
  * dt = 1/ODR jako parametr; detektor rest 1. rzedu ||lin|| < 0.3; harness offline
  * tools/vbt_offline (5 scenariuszy PASS) — szczegoly bugow zlapanych w C6: trikig_vbt.c.
+ * v0.3.1 (audyt VBT 2026-08-30, Faza 2): C7 DRDY (INT1_CTRL=DRDY_XL, GPIOTE auto-probe
+ * polaryzacji z samowalidacja runtime, fallback polling + watchdog 30ms); probkowanie
+ * przeniesione z SWI do main loop; dt = t[n]-t[n-1] z timestampow ISR (clamp 4-40ms,
+ * dt_fault, gap>100ms => twardy ZUPT); memcmp = wylacznie diagnostyka w DRDY;
+ * C8 TWIM 400kHz hybryda (bb init/bus-clear, fault -> bb fallback, licznik twim_faults);
+ * C9 ring 16; profil DSP gravity/linear/velocity us (TRIKIG_VBT_PROFILE); isqrt 3->1.
  */
 #include <stdint.h>
 #include <stdbool.h>
@@ -45,6 +51,7 @@
 #include "app_timer.h"
 #include "app_util_platform.h"
 #include "nrf_drv_wdt.h"
+#include "nrf_drv_gpiote.h"
 
 #include "trikig_board.h"
 #include "trikig_diag.h"
@@ -72,8 +79,12 @@
 /* ---- ramka wire: 14B = [0x22,0x00 | gyro(6) | acc(6)] i16LE, gyro FIRST (PWA layout, nie zmieniac) ---- */
 #define FRAME_SIZE              14u
 #define FRAME_V2_SIZE           19u         /* v2: 22 01 | seq16 | gyro6+acc6 | vel16 | flags8 */
-#define RING_SLOTS              4u
-#define POLL_INTERVAL_MS        9u          /* ~111Hz timer vs ODR 104 -> okazjonalne duplikaty (v19) */
+#define RING_SLOTS              16u         /* C9: 4 -> 16 (~300B bss; margines BLE z ~29ms do ~145ms) */
+#define POLL_INTERVAL_MS        9u          /* 9ms: teraz tylko BTN + watchdog DRDY (probki z DRDY) */
+#define DRDY_TS_SLOTS           4u          /* FIFO timestampow ISR -> main */
+#define DT_MIN_US               4000u       /* clamp dt (P3): < 250 Hz nie zdarzy sie przy 104 ODR */
+#define DT_MAX_US               40000u      /* > 25 Hz = probka zgubiona */
+#define DT_GAP_US               100000u     /* > 100ms przerwy => twardy ZUPT + nominalny dt */
 
 BLE_NUS_DEF(m_nus, NRF_SDH_BLE_TOTAL_LINK_COUNT);
 NRF_BLE_GATT_DEF(m_gatt);
@@ -158,18 +169,65 @@ static void btn_sample(void)                    /* poll timer context (9ms) */
     }
 }
 
-/* ---- poll: IMU OUT -> ramka -> ring (app_timer context) ---- */
+/* ---- C7: akwizycja DRDY -> main loop (ISR tylko timestampuje; I2C/VBT/ring w main) ----
+ * INT1 = DRDY_XL (LSM6DSL INT1_CTRL bit0). Polaryzacja INT1 niezweryfikowana plytowo
+ * (D-016, brak LA) => boot-probe zlicza krawedzie w 100ms (~10 @104Hz): rising, potem
+ * falling; brak krawedzi = fallback polling (poll timer zadaje probki co 9ms).
+ * Watchdog runtime: brak probki > 30ms => fallback (licznik drdy_fallbacks). */
 APP_TIMER_DEF(m_poll_timer);
 
-static uint32_t s_last_fresh_cyc = 0;   /* DWT @ ostatniej swiezej probki (C1: okres probkowania) */
+static volatile uint32_t s_drdy_ts[DRDY_TS_SLOTS];   /* FIFO timestampow (ISR pisze, main czyta) */
+static volatile uint8_t  s_drdy_wr = 0, s_drdy_rd = 0;
+static volatile uint8_t  s_fallback_req = 0;         /* zadania watchdog/poll -> main (single-producer) */
+static uint32_t s_last_sample_cyc = 0;               /* DWT ostatniej probki (watchdog DRDY) */
+static uint32_t s_prev_ts_cyc = 0;                   /* C7: poprzedni timestamp (dt) */
+static bool     s_prev_ts_valid = false;
 
-static void poll_timeout_handler(void * p_context)
+static void drdy_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action)
 {
-    (void)p_context;
-    btn_sample();
-    if (!m_imu_ok) return;
-    if (m_conn_handle == BLE_CONN_HANDLE_INVALID) return;
+    (void)pin; (void)action;
+    uint8_t wr = s_drdy_wr;
+    uint8_t next = (uint8_t)((wr + 1) % DRDY_TS_SLOTS);
+    if (next != s_drdy_rd) {
+        s_drdy_ts[wr] = DWT->CYCCNT;                 /* timestamp = czas DRDY (nie odczytu) */
+        s_drdy_wr = next;
+    }                                                /* pelne FIFO: drop (main opozniony; watchdog pokryje) */
+}
 
+/* boot-probe polaryzacji INT1: blokujace ~100ms na probe; zwraca true gdy DRDY zyje */
+static bool drdy_probe(void)
+{
+    static const nrf_gpiote_polarity_t pols[2] = { NRF_GPIOTE_POLARITY_LOTOHI,
+                                                   NRF_GPIOTE_POLARITY_HITOLO };
+    for (uint8_t pi = 0; pi < 2; pi++) {
+        s_drdy_wr = s_drdy_rd = 0;
+        nrf_drv_gpiote_in_config_t cfg = NRFX_GPIOTE_CONFIG_IN_SENSE_LOTOHI(true);
+        cfg.sense = pols[pi];
+        if (nrf_drv_gpiote_in_init(PIN_IMU_INT1, &cfg, drdy_handler) != NRF_SUCCESS) return false;
+        nrf_drv_gpiote_in_event_enable(PIN_IMU_INT1, true);
+        if (!lsm6dsl_drdy_enable(true)) {
+            nrf_drv_gpiote_in_event_disable(PIN_IMU_INT1);
+            nrf_drv_gpiote_in_uninit(PIN_IMU_INT1);
+            return false;                            /* I2C padl — polling tez nie zyje */
+        }
+        nrf_delay_ms(100);                           /* ~10 krawedzi @104Hz */
+        uint8_t edges = (uint8_t)(s_drdy_wr - s_drdy_rd);
+        if (edges >= 5) {
+            g_diag.drdy_mode = (uint8_t)(pi + 1);    /* 1 = rising, 2 = falling */
+            rtt_diag_printf("S2 DRDY ok pol=%u edges=%u", g_diag.drdy_mode, edges);
+            return true;
+        }
+        lsm6dsl_drdy_enable(false);
+        nrf_drv_gpiote_in_event_disable(PIN_IMU_INT1);
+        nrf_drv_gpiote_in_uninit(PIN_IMU_INT1);
+    }
+    return false;
+}
+
+/* odczyt + VBT + ring: wspolne dla DRDY i fallback; ts = czas probki z ISR (DRDY)
+ * albo teraz (fallback). ts_valid=false => dt nominalny (fallback nie zna czasu probki). */
+static void process_sample(uint32_t ts_cyc, bool ts_valid)
+{
     uint32_t t0 = diag_cyc();
     uint8_t raw[12];
     if (!lsm6dsl_read_motion(raw)) return;
@@ -177,23 +235,40 @@ static void poll_timeout_handler(void * p_context)
 
     uint16_t seq = m_sample_seq++;               /* K4: kazda probka, nawet dropnieta */
 
-    /* K3: duplikat (timer 9ms vs ODR 104Hz) nie wchodzi do calkowania VBT */
+    /* P0 (audyt VBT 2026-08-30): memcmp tylko DIAGNOSTYKA — probke identyfikuje DRDY.
+     * W trybie polling (fallback) duplikat musi nadal nie wchodzic do calkowania
+     * (timer dogania ODR); w trybie DRDY kazdy odczyt = nowa probka. */
     bool is_dup = (memcmp(raw, s_prev_raw, sizeof(raw)) == 0);
     memcpy(s_prev_raw, raw, sizeof(raw));
-    if (is_dup) {
-        if (s_dup_count < 0xFFFF) s_dup_count++;
-        g_diag.imu_dups++;
-    } else {
-        uint32_t now = diag_cyc();
-        diag_period_us(diag_cyc_us(now - s_last_fresh_cyc));   /* C1: min/max/avg okresu */
-        s_last_fresh_cyc = now;
-        g_diag.imu_samples++;
+    if (is_dup && s_dup_count < 0xFFFF) s_dup_count++;
+    g_diag.imu_dups += is_dup;
+    if (!is_dup) g_diag.imu_samples++;
+
+    /* C7: dt = t[n]-t[n-1] z timestampow DRDY; clamp min/max + dt_fault; gap > 100ms
+     * => twardy ZUPT (reset integratora) i dt nominalny. */
+    uint16_t dt_q16 = TRIKIG_VBT_DT_104HZ_Q16;
+    if (ts_valid && g_diag.drdy_mode != 0) {
+        if (s_prev_ts_valid) {
+            uint32_t dt_us = (ts_cyc - s_prev_ts_cyc) >> 6;
+            diag_period_us(dt_us);               /* min/avg/max okresu probkowania */
+            if (dt_us > DT_GAP_US) {
+                g_diag.dt_faults++;
+                vbt_reset_velocity();
+                dt_us = (TRIKIG_VBT_DT_104HZ_Q16 * 1000000u) >> 16;   /* nominalny */
+            } else if (dt_us < DT_MIN_US || dt_us > DT_MAX_US) {
+                g_diag.dt_faults++;
+                dt_us = (dt_us < DT_MIN_US) ? DT_MIN_US : DT_MAX_US;
+            }
+            dt_q16 = (uint16_t)(((uint64_t)dt_us << 16) / 1000000u);
+        }
+        s_prev_ts_cyc = ts_cyc;
+        s_prev_ts_valid = true;
     }
 
     /* K5: VBT liczony NIEZALEZNIE od stanu ringu BLE (backpressure nie zatrzymuje calkowania) */
-    if (!is_dup) {
+    if (!is_dup || g_diag.drdy_mode != 0) {
         t0 = diag_cyc();
-        vbt_on_frame(raw, TRIKIG_VBT_DT_104HZ_Q16);   /* C5: dt=1/ODR; C7 DRDY -> dt mierzony */
+        vbt_on_frame(raw, dt_q16);
         diag_max16(&g_diag.dsp_us_max, diag_cyc_us(diag_cyc() - t0));   /* C1: czas DSP/VBT */
     }
 
@@ -206,10 +281,26 @@ static void poll_timeout_handler(void * p_context)
 
     memcpy(ring[slot].raw, raw, sizeof(raw));
     ring[slot].seq     = seq;
-    ring[slot].vel_mms = (int16_t)vbt_velocity_mms();   /* K2: SNAPSHOT przy poll, nie przy wysylce */
-    ring[slot].flags   = vbt_flags();                    /* K2: SNAPSHOT przy poll */
+    ring[slot].vel_mms = (int16_t)vbt_velocity_mms();   /* K2: SNAPSHOT przy probce, nie przy wysylce */
+    ring[slot].flags   = vbt_flags();                    /* K2: SNAPSHOT przy probce */
     __DMB();
     ring_wr = next;
+    s_last_sample_cyc = diag_cyc();
+}
+
+/* poll 9ms: BTN + zadawanie probek w trybie polling + watchdog DRDY */
+static void poll_timeout_handler(void * p_context)
+{
+    (void)p_context;
+    btn_sample();
+    if (!m_imu_ok) return;
+    if (m_conn_handle == BLE_CONN_HANDLE_INVALID) return;
+
+    if (g_diag.drdy_mode == 0) {
+        if (s_fallback_req < 255) s_fallback_req++;      /* tryb polling: probka co tick */
+    } else if ((uint32_t)(diag_cyc() - s_last_sample_cyc) > (uint32_t)(30000u << 6)) {
+        if (s_fallback_req < 255) s_fallback_req++;      /* watchdog: DRDY milczy > 30ms */
+    }
 }
 
 /* ---- sleep 5 min bez polaczenia: app_timer 1s zamiast iteracji petli ---- */
@@ -390,6 +481,13 @@ int main(void)
     }
     if (!m_imu_ok) rtt_diag_printf("S2 IMU DEAD (HW?)");
     vbt_reset();                                 /* bias grawitacji zasilony pierwszymi ramkami (spoczynek) */
+    /* C7: probe DRDY (polaryzacja INT1 niezweryfikowana plytowo — D-016; runtime-probe
+     * zlicza krawedzie w 100ms, ~10 @104Hz; rising -> falling -> fallback polling) */
+    if (m_imu_ok && nrf_drv_gpiote_init() == NRF_SUCCESS && drdy_probe()) {
+        /* DRDY aktywny: probki procesowane w main loop z timestampow ISR */
+    } else {
+        rtt_diag_printf("S2 DRDY off -> polling");
+    }
     batt_init();                                 /* F5: SAADC AIN2 + kalibracja offsetu (blokujaca ~ms) */
     uint16_t batt_mv_boot = batt_sample_mv();    /* pierwszy pomiar od razu (nie czekamy 1s ticka) */
     if (batt_mv_boot != 0) {
@@ -430,7 +528,7 @@ int main(void)
     APP_ERROR_CHECK(app_timer_start(m_poll_timer, APP_TIMER_TICKS(POLL_INTERVAL_MS), NULL));
     APP_ERROR_CHECK(app_timer_create(&m_sleep_timer, APP_TIMER_MODE_REPEATED, sleep_timeout_handler));
     APP_ERROR_CHECK(app_timer_start(m_sleep_timer, APP_TIMER_TICKS(SLEEP_TIMER_MS), NULL));
-    rtt_diag_printf("S5 poll %ums ON, sleep %us", POLL_INTERVAL_MS, SLEEP_TIMEOUT_S);
+    rtt_diag_printf("S5 poll %ums ON, sleep %us, drdy=%u", POLL_INTERVAL_MS, SLEEP_TIMEOUT_S, g_diag.drdy_mode);
 
 #if TRIKIG_RTT_DIAG
     uint16_t vbt_log_div = 0;    /* diag: dzielnik logu VBT ~1s; przy DIAG=0 nieuzywane */
@@ -480,6 +578,23 @@ int main(void)
         if (btn_3) {                     /* SPEC 6: 3 wcisniecia = 2x mrug + reset licznika sleep */
             led_blink(2, 60, 60);
             idle_secs = 0;
+        }
+
+        /* C7: probki z FIFO timestampow DRDY (ISR -> main). Niepolaczony: drain-and-discard,
+         * zeby po connect nie policzyc dt ze starych timestampow. */
+        while (s_drdy_wr != s_drdy_rd) {
+            uint32_t ts = s_drdy_ts[s_drdy_rd];
+            s_drdy_rd = (uint8_t)((s_drdy_rd + 1) % DRDY_TS_SLOTS);
+            if (m_imu_ok && m_conn_handle != BLE_CONN_HANDLE_INVALID) {
+                process_sample(ts, true);
+            }
+        }
+        /* fallback (tryb polling albo watchdog DRDY): zadanie z poll-timera */
+        if (s_fallback_req != 0) {
+            s_fallback_req--;
+            if (m_imu_ok && m_conn_handle != BLE_CONN_HANDLE_INVALID) {
+                process_sample(diag_cyc(), false);
+            }
         }
 
         while (ring_rd != ring_wr) {

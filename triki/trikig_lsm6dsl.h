@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#define LSM_ADDR          0x6A                 /* 7-bit (TWIM nrfx) */
 #define LSM_ADDR_W        ((0x6A << 1) | 0u)   /* SA0=VDD -> 0x6A */
 #define LSM_ADDR_R        ((0x6A << 1) | 1u)
 
@@ -20,6 +21,7 @@
 #define LSM_CTRL2_G       0x11
 #define LSM_CTRL3_C       0x12
 #define LSM_OUTX_L_G      0x22   /* burst 12B: gyro(6)+acc(6), IF_INC */
+#define LSM_INT1_CTRL     0x0D   /* DRDY_XL = bit0 (C7); zapis walidowany readbackiem */
 
 /* --- wartosci CTRL1_XL / CTRL2_G (datasheet, NIE z pamieci!) ---
  * ODR bity [7:4]: 0100 = 104 Hz
@@ -38,6 +40,7 @@
 #define LSM_RESET_MAX_ITERS 500u  /* 500*100us = 50ms timeout na SW reset (K7) */
 
 bool    lsm6dsl_init(void);                    /* WHO_AM_I + SW reset + config, z readbackiem RTT */
-bool    lsm6dsl_read_motion(uint8_t *dst12);   /* burst gyro(6)+acc(6) i16LE */
+bool    lsm6dsl_read_motion(uint8_t *dst12);   /* burst gyro(6)+acc(6) i16LE (TWIM, fallback bb) */
+bool    lsm6dsl_drdy_enable(bool on);          /* C7: INT1_CTRL = DRDY_XL, z readbackiem */
 
 #endif /* TRIKIG_LSM6DSL_H */

@@ -27,6 +27,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Profil DSP (plan VBT, P2): sekcje mierzone DWT do g_diag — tylko build deweloperski
+ * (TRIKIG_VBT_PROFILE=1 z Makefile przy TRIKIG_RTT_DIAG=1); host/harness bez tego.
+ * Variadic (__VA_ARGS__): przecinki w kodzie sekcji rozwalylyby argumenty zwyklego makra. */
+#if TRIKIG_VBT_PROFILE
+#include "trikig_diag.h"
+#define VBT_PROF(section, ...) \
+    do { uint32_t t0_ = diag_cyc(); { __VA_ARGS__ } diag_max16(&g_diag.section, diag_cyc_us(diag_cyc() - t0_)); } while (0)
+#else
+#define VBT_PROF(section, ...) \
+    do { { __VA_ARGS__ } } while (0)
+#endif
+
 static int32_t s_gest[3];       /* q8.8 m/s^2, estymata wektora grawitacji (body frame) */
 static int32_t s_lpf[3];        /* q8.8 m/s^2, LPF(acc) — cel korekcji + boot-snap */
 static int32_t s_lin[3];        /* q8.8 m/s^2, LPF(acc - g_est) — linear acc */
@@ -81,6 +93,11 @@ void vbt_set_axis(const int16_t axis_q12[3])
         s_axis[i] = ((int32_t)axis_q12[i] * (int32_t)TRIKIG_VBT_AXIS_Q12) / n;
 }
 
+void vbt_reset_velocity(void)
+{
+    s_vel_q88 = 0;                              /* twardy ZUPT (C7: gap dt / rekalibracja) */
+}
+
 void vbt_on_frame(const uint8_t *raw12, uint16_t dt_q16)
 {
     int16_t g_raw[3], a[3];
@@ -122,68 +139,76 @@ void vbt_on_frame(const uint8_t *raw12, uint16_t dt_q16)
     int32_t wq[3] = { (int32_t)g_raw[0] * TRIKIG_VBT_GYR_Q16_RAD_LSB,
                       (int32_t)g_raw[1] * TRIKIG_VBT_GYR_Q16_RAD_LSB,
                       (int32_t)g_raw[2] * TRIKIG_VBT_GYR_Q16_RAD_LSB };
-    int64_t cx = (int64_t)wq[1]*s_gest[2] - (int64_t)wq[2]*s_gest[1];
-    int64_t cy = (int64_t)wq[2]*s_gest[0] - (int64_t)wq[0]*s_gest[2];
-    int64_t cz = (int64_t)wq[0]*s_gest[1] - (int64_t)wq[1]*s_gest[0];
-    s_gest[0] -= (int32_t)((cx * (int64_t)dt_q16 + ((int64_t)1 << 31)) >> 32);
-    s_gest[1] -= (int32_t)((cy * (int64_t)dt_q16 + ((int64_t)1 << 31)) >> 32);
-    s_gest[2] -= (int32_t)((cz * (int64_t)dt_q16 + ((int64_t)1 << 31)) >> 32);
+    VBT_PROF(grav_us_max,
+    {
+        int64_t cx = (int64_t)wq[1]*s_gest[2] - (int64_t)wq[2]*s_gest[1];
+        int64_t cy = (int64_t)wq[2]*s_gest[0] - (int64_t)wq[0]*s_gest[2];
+        int64_t cz = (int64_t)wq[0]*s_gest[1] - (int64_t)wq[1]*s_gest[0];
+        s_gest[0] -= (int32_t)((cx * (int64_t)dt_q16 + ((int64_t)1 << 31)) >> 32);
+        s_gest[1] -= (int32_t)((cy * (int64_t)dt_q16 + ((int64_t)1 << 31)) >> 32);
+        s_gest[2] -= (int32_t)((cz * (int64_t)dt_q16 + ((int64_t)1 << 31)) >> 32);
 
-    /* 2. korekcja ACC: gate |w| < 2 dps (rotacja => ufa gyro) I innowacja
-     *    ||acc-g|| < 1.0 m/s^2. Cel = RAW acc (nie LPF: brak lagu w petli). Bez gate
-     *    rest — dead-lock (blad g => "moving" => korekcja nigdy, C6); bez gate
-     *    innowacji — korekcja absorbala push (bounce po repie, C6). */
-    int32_t dg[3] = { av[0] - s_gest[0], av[1] - s_gest[1], av[2] - s_gest[2] };
-    int64_t pg = (int64_t)dg[0]*dg[0] + (int64_t)dg[1]*dg[1] + (int64_t)dg[2]*dg[2];
-    if (pg > (int64_t)UINT32_MAX) pg = (int64_t)UINT32_MAX;
-    if (abs(wq[0]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
-        abs(wq[1]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
-        abs(wq[2]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
-        isqrt32((uint32_t)pg) < (int32_t)TRIKIG_VBT_G_CORR_MAX) {
-        for (int i = 0; i < 3; i++)
-            s_gest[i] += dg[i] >> TRIKIG_VBT_G_CORR_SHIFT;
-    }
+        /* 2. korekcja ACC: gate |w| < 2 dps (rotacja => ufa gyro) I innowacja
+         *    ||acc-g|| < 1.0 m/s^2. Cel = RAW acc (nie LPF: brak lagu w petli). Bez gate
+         *    rest — dead-lock (blad g => "moving" => korekcja nigdy, C6); bez gate
+         *    innowacji — korekcja absorbala push (bounce po repie, C6).
+         *    P2: porownanie na KWADRACIE innowacji (bez isqrt — 1 sqrt mniej/ramke). */
+        int32_t dg[3] = { av[0] - s_gest[0], av[1] - s_gest[1], av[2] - s_gest[2] };
+        int64_t pg = (int64_t)dg[0]*dg[0] + (int64_t)dg[1]*dg[1] + (int64_t)dg[2]*dg[2];
+        if (abs(wq[0]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
+            abs(wq[1]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
+            abs(wq[2]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
+            pg < (int64_t)TRIKIG_VBT_G_CORR_MAX * TRIKIG_VBT_G_CORR_MAX) {
+            for (int i = 0; i < 3; i++)
+                s_gest[i] += dg[i] >> TRIKIG_VBT_G_CORR_SHIFT;
+        }
 
-    /* 3. renormalizacja do g_ref (Euler rozmywa norme, kwantyzacja tez) */
-    int64_t p = (int64_t)s_gest[0]*s_gest[0] + (int64_t)s_gest[1]*s_gest[1] + (int64_t)s_gest[2]*s_gest[2];
-    if (p > (int64_t)UINT32_MAX) p = (int64_t)UINT32_MAX;
-    int32_t gn = isqrt32((uint32_t)p);
-    if (gn > 0) {
-        for (int i = 0; i < 3; i++)
-            s_gest[i] = (int32_t)(((int64_t)s_gest[i] * (int64_t)TRIKIG_VBT_G_REF_Q88) / gn);
-    }
+        /* 3. renormalizacja do g_ref (Euler rozmywa norme, kwantyzacja tez) */
+        int64_t p = (int64_t)s_gest[0]*s_gest[0] + (int64_t)s_gest[1]*s_gest[1] + (int64_t)s_gest[2]*s_gest[2];
+        if (p > (int64_t)UINT32_MAX) p = (int64_t)UINT32_MAX;
+        int32_t gn = isqrt32((uint32_t)p);
+        if (gn > 0) {
+            for (int i = 0; i < 3; i++)
+                s_gest[i] = (int32_t)(((int64_t)s_gest[i] * (int64_t)TRIKIG_VBT_G_REF_Q88) / gn);
+        }
+    });
 
     /* 4. linear acc: JEDNO LPF na roznicy (struktura z C6 — patrz naglowek) */
-    for (int i = 0; i < 3; i++)
-        s_lin[i] += ((av[i] - s_gest[i]) - s_lin[i]) >> TRIKIG_VBT_ACC_LPF_ALPHA;
+    VBT_PROF(lin_us_max,
+    {
+        for (int i = 0; i < 3; i++)
+            s_lin[i] += ((av[i] - s_gest[i]) - s_lin[i]) >> TRIKIG_VBT_ACC_LPF_ALPHA;
 
-    /* 5. detektor bezruchu: ||lin|| — 1. rzedu wzgledem a_perp (C6, patrz naglowek) */
-    int64_t pl = (int64_t)s_lin[0]*s_lin[0] + (int64_t)s_lin[1]*s_lin[1] + (int64_t)s_lin[2]*s_lin[2];
-    if (pl > (int64_t)UINT32_MAX) pl = (int64_t)UINT32_MAX;
-    int32_t dev = isqrt32((uint32_t)pl);
-    if (dev < (int32_t)TRIKIG_VBT_REST_TH) {
-        if (s_rest_cnt < 255) s_rest_cnt++;
-    } else {
-        s_rest_cnt = 0;
-    }
-    s_rest = (s_rest_cnt >= TRIKIG_VBT_REST_FRAMES);
+        /* 5. detektor bezruchu: ||lin|| — 1. rzedu wzgledem a_perp (C6, patrz naglowek).
+         *    P2: porownanie na kwadracie (bez isqrt). */
+        int64_t pl = (int64_t)s_lin[0]*s_lin[0] + (int64_t)s_lin[1]*s_lin[1] + (int64_t)s_lin[2]*s_lin[2];
+        if (pl < (int64_t)TRIKIG_VBT_REST_TH * TRIKIG_VBT_REST_TH) {
+            if (s_rest_cnt < 255) s_rest_cnt++;
+        } else {
+            s_rest_cnt = 0;
+        }
+        s_rest = (s_rest_cnt >= TRIKIG_VBT_REST_FRAMES);
+    });
 
     /* 6. projekcja na os ruchu -> integracja 1D */
-    int32_t a_move = (s_lin[0] * s_axis[0] +
-                      s_lin[1] * s_axis[1] +
-                      s_lin[2] * s_axis[2]) >> 12;
+    VBT_PROF(vel_us_max,
+    {
+        int32_t a_move = (s_lin[0] * s_axis[0] +
+                          s_lin[1] * s_axis[1] +
+                          s_lin[2] * s_axis[2]) >> 12;
 
-    if (s_rest) {
-        /* ZUPT: min krok 1 q8.8 — bez tego s_vel>>5 == 0 przy |v| < 125 mm/s i decay
-         * STOI (bug dziedziczony z v0.0.24, zlapano w C6). */
-        int32_t d = s_vel_q88 >> TRIKIG_VBT_BETA_LPF;
-        if (d == 0 && s_vel_q88 != 0) d = (s_vel_q88 > 0) ? 1 : -1;
-        s_vel_q88 -= d;
-    } else {
-        s_vel_q88 += (a_move * (int32_t)dt_q16) >> 16;   /* v += a*dt (dt q16.16) */
-    }
-    if (s_vel_q88 >  TRIKIG_VBT_V_CLAMP) s_vel_q88 =  TRIKIG_VBT_V_CLAMP;
-    if (s_vel_q88 < -TRIKIG_VBT_V_CLAMP) s_vel_q88 = -TRIKIG_VBT_V_CLAMP;
+        if (s_rest) {
+            /* ZUPT: min krok 1 q8.8 — bez tego s_vel>>5 == 0 przy |v| < 125 mm/s i decay
+             * STOI (bug dziedziczony z v0.0.24, zlapano w C6). */
+            int32_t d = s_vel_q88 >> TRIKIG_VBT_BETA_LPF;
+            if (d == 0 && s_vel_q88 != 0) d = (s_vel_q88 > 0) ? 1 : -1;
+            s_vel_q88 -= d;
+        } else {
+            s_vel_q88 += (a_move * (int32_t)dt_q16) >> 16;   /* v += a*dt (dt q16.16) */
+        }
+        if (s_vel_q88 >  TRIKIG_VBT_V_CLAMP) s_vel_q88 =  TRIKIG_VBT_V_CLAMP;
+        if (s_vel_q88 < -TRIKIG_VBT_V_CLAMP) s_vel_q88 = -TRIKIG_VBT_V_CLAMP;
+    });
 }
 
 int32_t vbt_velocity_mms(void)

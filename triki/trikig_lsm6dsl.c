@@ -1,12 +1,33 @@
 /**
- * trikig_lsm6dsl.c - init + polling OUT (strategia v19, FIFO OFF)
+ * trikig_lsm6dsl.c - init + odczyt OUT (C7/C8: DRDY enable, TWIM 400kHz z fallbackiem bb)
  */
 #include "trikig_lsm6dsl.h"
 #include "trikig_bb_i2c.h"
 #include "trikig_board.h"
+#include "trikig_diag.h"
 #include "trikig_version.h"
 #include "nrf_delay.h"
+#include "nrfx_twim.h"
 #include "SEGGER_RTT.h"
+
+/* C8: TWIM0 @400kHz — path danych (burst 12B ~40us vs bb ~300us, ~0 CPU / DMA).
+ * Hybryda: init/bus-clear zostaja bit-bang (stuck-bus recovery), TWIM tylko odczyt;
+ * fault TWIM => uninit (piny -> GPIO), odczyt bb, re-init lazy przy nastepnej probce. */
+static const nrfx_twim_t m_twi = NRFX_TWIM_INSTANCE(0);
+static bool m_twim_ready = false;
+
+static bool lsm6dsl_twim_init(void)
+{
+    if (m_twim_ready) return true;
+    nrfx_twim_config_t cfg = NRFX_TWIM_DEFAULT_CONFIG;
+    cfg.scl       = 6u;                       /* P0.06 SCL (SPEC 1) */
+    cfg.sda       = 5u;                       /* P0.05 SDA */
+    cfg.frequency = NRF_TWIM_FREQ_400K;
+    if (nrfx_twim_init(&m_twi, &cfg, NULL, NULL) != NRFX_SUCCESS) return false;  /* NULL = blocking */
+    nrfx_twim_enable(&m_twi);
+    m_twim_ready = true;
+    return true;
+}
 
 
 static bool reg_write(uint8_t reg, uint8_t val)
@@ -79,7 +100,32 @@ bool lsm6dsl_init(void)
     return true;
 }
 
+bool lsm6dsl_drdy_enable(bool on)
+{
+    /* INT1_CTRL (0x0D) bit0 = INT1_DRDY_XL (datasheet); zapis walidowany readbackiem (D-017) */
+    if (!reg_write(LSM_INT1_CTRL, on ? 0x01u : 0x00u)) return false;
+    uint8_t rb = 0;
+    if (!reg_read(LSM_INT1_CTRL, &rb, 1)) return false;
+    if (rb != (on ? 0x01u : 0x00u)) {
+        rtt_diag_printf("S2 INT1_CTRL rb=%02x MISMATCH", rb);
+        return false;
+    }
+    return true;
+}
+
 bool lsm6dsl_read_motion(uint8_t *dst12)
 {
+    if (lsm6dsl_twim_init()) {
+        uint8_t reg = LSM_OUTX_L_G;
+        /* STOP po TX; LSM6DSL pamieta adres rejestru (IF_INC), RX od nowego START */
+        nrfx_err_t e = nrfx_twim_tx(&m_twi, LSM_ADDR, &reg, 1, false);
+        if (e == NRFX_SUCCESS) e = nrfx_twim_rx(&m_twi, LSM_ADDR, dst12, 12);
+        if (e == NRFX_SUCCESS) return true;
+        if (g_diag.twim_faults < 0xFFFFFFFFu) g_diag.twim_faults++;
+        nrfx_twim_uninit(&m_twi);            /* piny 5/6 -> GPIO dla bb fallback */
+        m_twim_ready = false;
+    }
+    /* fallback: bit-bang (sprawdzona sciezka sprzed C8) */
+    bb_i2c_bus_clear();
     return reg_read(LSM_OUTX_L_G, dst12, 12);
 }

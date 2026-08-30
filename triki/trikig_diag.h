@@ -16,17 +16,24 @@
 #include "trikig_board.h"
 
 typedef struct {
-    uint32_t imu_samples;    /* swieze probki IMU (bez duplikatow), kontekst poll */
-    uint32_t imu_dups;       /* duplikaty (timer 9ms dogonal ODR 104Hz) */
+    uint32_t imu_samples;    /* swieze probki IMU (bez duplikatow) */
+    uint32_t imu_dups;       /* duplikaty — TYLKO diagnostyka (memcmp nie steruje VBT) */
     uint32_t ring_drops;     /* drop ramki BLE: pelny ring (K4: seq juz poszedl) */
     uint32_t seq_gaps;       /* dziury w seq widziane przy konsumpcji ringu (main) */
     uint32_t ble_drops;      /* ble_nus_data_send != NRF_SUCCESS (main) */
-    uint16_t per_min_us;     /* okres miedzy swiezymi probkami [us] */
+    uint32_t dt_faults;      /* dt poza clampem lub gap > 100ms (C7) */
+    uint32_t drdy_fallbacks; /* odczyty watchdogiem poll-timera zamiast DRDY (C7) */
+    uint32_t twim_faults;    /* bledy TWIM -> fallback bit-bang (C8) */
+    uint16_t per_min_us;     /* dt = t[n]-t[n-1] z timestampow DRDY [us] */
     uint16_t per_max_us;
     uint16_t per_avg_us;     /* EMA 1/32 */
-    uint16_t acq_us_max;     /* I2C burst 12B — worst case */
-    uint16_t dsp_us_max;     /* vbt_on_frame — worst case */
-    uint16_t ble_us_max;     /* ble_nus_data_send — worst case */
+    uint16_t acq_us_max;     /* I2C burst 12B (worst case) */
+    uint16_t dsp_us_max;     /* vbt_on_frame calkowity (worst case) */
+    uint16_t ble_us_max;     /* ble_nus_data_send (worst case) */
+    uint16_t grav_us_max;    /* profil DSP (C6 planu): propagacja+korekcja+renorm */
+    uint16_t lin_us_max;     /* LPF roznicy + detektor rest + projekcja */
+    uint16_t vel_us_max;     /* integracja + ZUPT + clamp */
+    uint8_t  drdy_mode;      /* 0 = polling (brak DRDY), 1 = rising, 2 = falling */
 } trikig_diag_t;
 
 extern trikig_diag_t g_diag;

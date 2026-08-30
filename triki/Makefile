@@ -50,6 +50,7 @@ SRC_FILES += \
   $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_clock.c \
   $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_wdt.c \
   $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_saadc.c \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_twim.c \
   $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_gpiote.c \
   $(SDK_ROOT)/modules/nrfx/drivers/src/prs/nrfx_prs.c \
   $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_uart.c \
@@ -217,6 +218,8 @@ CFLAGS += -Wall
 # Build produkcyjny: make release (audyt 2026-08-30 — wczesniej hexy release mialy RTT wlaczone).
 TRIKIG_RTT_DIAG ?= 1
 CFLAGS += -DTRIKIG_RTT_DIAG=$(TRIKIG_RTT_DIAG)
+TRIKIG_VBT_PROFILE ?= 1
+CFLAGS += -DTRIKIG_VBT_PROFILE=$(TRIKIG_VBT_PROFILE)
 CFLAGS += -mfloat-abi=soft
 # keep every function in a separate section, this allows linker to discard unused ones
 CFLAGS += -ffunction-sections -fdata-sections -fno-strict-aliasing
@@ -270,7 +273,7 @@ default: nrf52810_xxaa
 # '+' = przekazanie jobservera do sub-make (bez tego -j4 lamie dump pliku .in linkera).
 .PHONY: release
 release:
-	+$(MAKE) --no-print-directory TRIKIG_RTT_DIAG=0
+	+$(MAKE) --no-print-directory TRIKIG_RTT_DIAG=0 TRIKIG_VBT_PROFILE=0
 
 # Print all targets that can be built
 help:
