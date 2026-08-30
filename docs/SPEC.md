@@ -65,7 +65,7 @@ Wartosci WYLACZNIE z tabeli datasheet (D-017); readback w RTT przy boocie.
 |---|---|---|
 | CTRL1_XL (0x10) | 0x44 | ODR 104Hz (bity 7:4=0100) + FS_XL=01=**16g** (tabela NIEMONOTONICZNA: 00=2g,01=16g,10=4g,11=8g) |
 | CTRL2_G (0x11) | 0x4C | ODR 104Hz + FS_G=11=**2000dps** (monotoniczna) |
-| CTRL3_C (0x12) | 0x44 | BDU + IF_INC |
+| CTRL3_C (0x12) | 0x0C | BDU(bit3) + IF_INC(bit2). 0.1.0 i wcześniejsze: 0x44 = H_LACTIVE+IF_INC — **BDU nie ustawiony** (audyt 2026-08-30, readback c3 od 0.1.1) |
 | FIFO_CTRL5 (0x0A) | 0x00 | FIFO bypass (strategia poll; FIFO nie dziala na tym egzemplarzu bez LA — D-016) |
 
 Sensitivity: acc 2048 LSB/g, gyro 16.4 LSB/dps (= skale stocka, 1:1).
@@ -117,7 +117,7 @@ Brak połączenia BLE = brak inkrementacji (to "nie zbieramy", nie drop).
 
 - Sleep: **300s bez polaczenia** (app_timer 1s, flaga g_go_sleep, SYSTEMOFF z petli glownej — nie z kontekstu SWI).
 - Wybudzenie: BTN sense -> reset -> boot blink -> adv.
-- BTN w trybie czuwania: 3 wcisniecia = 2x mrug + reset licznika sleep.
+- BTN w trybie czuwania: 3 wcisniecia = 2x mrug + reset licznika sleep (od 0.1.1: edge-detect + debounc 27ms w poll handler; wczesniej pojedyncze wcisniecie liczilo sie jako 3).
 - Pobor pradu: NIE mierzony (roadmap O-013 pkt 4).
 
 ---
@@ -127,12 +127,13 @@ Brak połączenia BLE = brak inkrementacji (to "nie zbieramy", nie drop).
 - APP_ERROR_CHECK = fail-stop -> fault handler: RTT kod+linia, LED SOS (3x40/40 + 1s) w petli.
 - adv_start fail -> petla SOS.
 - imu_init: 5 prob x (WHO_AM_I 3x z bus-clear + SW reset); fail -> "IMU DEAD" w RTT, FW i tak startuje BLE.
-- RTT diag pod `TRIKIG_RTT_DIAG=1` (Makefile default ON): S1..S5, FW tag `FW=v0.0.21 c1=44 c2=4C`, blad APP_ERROR. Produkcja: flaga OFF = pelna cisza (FW tag tez).
+- RTT diag pod `TRIKIG_RTT_DIAG=1` (Makefile default ON): S1..S5, FW tag `FW=v0.x.y c1=44 c2=4C c3=0C`, blad APP_ERROR. Produkcja: `make release` = flaga OFF = pelna cisza (FW tag tez).
 
 ## 8. Budowanie i flash
 
 - Host: Ubuntu 104 `~/trikig-fw/triki/` (SOURCE OF TRUTH), GCC 13 systemowy, SDK `/home/ubuntu/nrf5sdk`.
 - Build: `make -j4` -> `_build/nrf52810_xxaa.hex`. v21: text=23532 data=140 bss=3348.
+- Build produkcyjny (RTT OFF): `make release` (od 0.1.1).
 - Flash (Win11/OpenOCD): SD->app po erase; **app-only OK gdy SD siedzi**; po recover ZAWSZE SD+app (D-017 pkt 3).
 - AP lock przy SWD = najpierw wybudz (BTN/zasilanie), recover = ostatecznosc (D-017 pkt 4).
 - Artefakty: SMB `Triki_G/nrf/trikig_triki_v0.0.21.hex` (sha256 d665b372... — PO WYMIANIE: e6c3796c, tag semver) + `s112_nrf52_7.2.0_softdevice.hex`.
@@ -175,7 +176,7 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 1. Duplikaty probek (timer 9ms vs ODR 104Hz) — do decyzji: 10ms/dryf albo INT1 DRDY [O-013 pkt 3].
 2. Brak backpressure: NRF_ERROR_RESOURCES = drop ramki (brak buforowania na conn interval) [O-013 pkt 2].
 3. Brak pomiaru baterii (SAADC + status w ramce/char) [O-013 pkt 5].
-4. Brak watchdog [O-013 pkt 6].
+4. Brak watchdog — ZROBIONE v0.0.27 (WDT 12s, covers boot).
 5. BB I2C ~250kHz = CPU-heavy burst (12B @104Hz — OK, ale bez DMA).
 6. TWIM i FIFO nie dzialaja na tym sprzecie bez diagnozy LA [O-013 pkt 8, AN4650].
 7. INT1 polaryzacja niezweryfikowana; INT1 skonfigurowany jako wejscie (dead w strategii poll).

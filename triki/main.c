@@ -1,17 +1,20 @@
 /**
- * trikig v22 — nRF52810 + LSM6DSL, S112 7.2.0 (refaktor v19)
+ * trikig — nRF52810 + LSM6DSL, S112 7.2.0 (refaktor v19)
  *
  * Moduly: trikig_bb_i2c (I2C), trikig_lsm6dsl (IMU), trikig_board (LED/BTN/sleep/RTT),
  *          trikig_vbt (velocity side-band O-012 — wire 14B bez zmian).
  * Zachowane semantyki v19: poll 9ms -> ramka 14B -> ring -> NUS; skale CTRL1=0x44/CTRL2=0x4C.
- * Zmiany vs v21: + trikig_vbt. Nazwa BLE "Triki GForce", ring 14B (byl 168B), sleep = app_timer 1s
- * (iteracje petli dawaly ~67s zamiast 300s), probe debug wyciety, RTT pod flaga TRIKIG_RTT_DIAG.
  * v0.0.27 (audyt 2026-08-29): WDT 8s (kick w petli glownej, fault=>reset zamiast SOS-loop),
  * BLE send = jedna proba/drop (default:break — koniec nieskonczonego retry), static_assert
  * V_CLAMP vs int16_t, TODO btn_cnt, komentarz idle_secs.
  * v0.1.0 (plan 027 K1-K5): ring_slot_t struct, snapshot vel/flags przy poll (K2),
  * duplikat pomija VBT (K3), seq liczy KAZDA probke — luki informacyjne (K4), VBT
  * niezalezny od backpressure ringu (K5). Zmiana KONTRAKTU seq => bump MINOR (D-020).
+ * v0.1.1 (audyt 2026-08-30): CTRL3_C 0x0C = BDU+IF_INC (0x44 ustawial H_LACTIVE zamiast
+ * BDU) + readback c3; CP delay w APP_TIMER_TICKS (jednostki app_timer2); BTN debounc +
+ * edge-detect (3 wcisniecia wg SPEC 6); clamp p w VBT isqrt (uint32 overflow); app_timer_init
+ * przed BLE; g_info_req = licznik zadan 20 12; split GATTS/GATTC timeout; Makefile: target
+ * release (TRIKIG_RTT_DIAG=0) + ostrzezenie SD-first przy flash.
  */
 #include <stdint.h>
 #include <stdbool.h>
@@ -51,8 +54,8 @@
 #define CONN_SUP_TIMEOUT        MSEC_TO_UNITS(4000, UNIT_10_MS)
 #define APP_ADV_INTERVAL        MSEC_TO_UNITS(40, UNIT_0_625_MS)
 #define APP_ADV_TIMEOUT         0
-#define FIRST_CP_DELAY          (5*32768)   /* 5s — jak w SDK examples */
-#define NEXT_CP_DELAY           (5*32768)
+#define FIRST_CP_DELAY          APP_TIMER_TICKS(5000)   /* 5s — audyt 2026-08-30: wczesniej surowe ticki v1 (5*32768) = zle jednostki pod app_timer2 */
+#define NEXT_CP_DELAY           APP_TIMER_TICKS(5000)
 #define MAX_CP_COUNT            3
 
 /* ---- ramka wire: 14B = [0x22,0x00 | gyro(6) | acc(6)] i16LE, gyro FIRST (PWA layout, nie zmieniac) ---- */
@@ -89,7 +92,7 @@ static volatile uint8_t  m_wire_mode = 1;    /* 1 = legacy 14B (default), 2 = v2
 static uint16_t          m_sample_seq = 0;
 static uint8_t           s_prev_raw[12] = {0};   /* K3: detekcja duplikatu (memcmp) */
 static volatile uint16_t s_dup_count = 0;        /* K3 diag: licznik duplikatow */
-static volatile bool     g_send_info = false;
+static volatile uint8_t  g_info_req = 0;         /* licznik zadan FW info (20 12); set: SWI, consume: main (audyt 2026-08-30) */
 static nrf_drv_wdt_channel_id m_wdt_channel;
 
 static void wdt_event_callback(void)
@@ -114,12 +117,37 @@ void app_error_fault_handler(uint32_t id, uint32_t pc, uint32_t info)
     }
 }
 
+/* ---- btn: debounc + edge-detect (audyt 2026-08-30) ----
+ * Wczesniej licznik rosly co iteracje petli glownej => pojedyncze wcisniecie
+ * liczilo sie jako 3. Teraz probkowanie w kontekscie poll (9ms), 3 stabilne
+ * probki = zmiana stanu, liczone tylko krawedzie wcisniecia (SPEC 6: 3 wcisniecia). */
+#define BTN_DEBOUNCE_SAMPLES    3u              /* 3 x 9ms = 27ms filtr drgan */
+
+static volatile uint8_t g_btn_presses = 0;      /* licznik wcisniec; producent: poll handler, konsument: main */
+static uint8_t s_btn_stable = 0;                /* filtrowany stan: 1 = wcisniety */
+static uint8_t s_btn_raw_cnt = 0;               /* licznik stabilnosci surowego stanu */
+
+static void btn_sample(void)                    /* poll timer context (9ms) */
+{
+    uint8_t raw = btn_pressed() ? 1u : 0u;
+    if (raw == s_btn_stable) {
+        s_btn_raw_cnt = 0;
+        return;
+    }
+    if (++s_btn_raw_cnt >= BTN_DEBOUNCE_SAMPLES) {
+        s_btn_stable = raw;
+        s_btn_raw_cnt = 0;
+        if (raw && g_btn_presses < 255) g_btn_presses++;    /* krawedz: release -> press */
+    }
+}
+
 /* ---- poll: IMU OUT -> ramka -> ring (app_timer context) ---- */
 APP_TIMER_DEF(m_poll_timer);
 
 static void poll_timeout_handler(void * p_context)
 {
     (void)p_context;
+    btn_sample();
     if (!m_imu_ok) return;
     if (m_conn_handle == BLE_CONN_HANDLE_INVALID) return;
 
@@ -190,8 +218,11 @@ static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context)
             (void)sd_ble_gatts_sys_attr_set(m_conn_handle, NULL, 0, 0);
             break;
         case BLE_GATTC_EVT_TIMEOUT:
-        case BLE_GATTS_EVT_TIMEOUT:
             (void)sd_ble_gap_disconnect(p_ble_evt->evt.gattc_evt.conn_handle,
+                                        BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
+            break;
+        case BLE_GATTS_EVT_TIMEOUT:
+            (void)sd_ble_gap_disconnect(p_ble_evt->evt.gatts_evt.conn_handle,
                                         BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
             break;
         default:
@@ -221,7 +252,7 @@ static void nus_evt_handler(ble_nus_evt_t *p_evt)
             }
             break;
         case 0x12:                       /* FW info request -> ramka 22 03 */
-            g_send_info = true;
+            g_info_req++;                /* licznik: zadanie z SWI nie przepada przy consume w main */
             break;
         case 0x15:                       /* stream on/off */
             if (len >= 3) m_stream_on = (d[2] == 0x01);
@@ -316,6 +347,11 @@ int main(void)
     led_blink(2, 40, 80);
     nrf_delay_ms(700);
 
+    /* app_timer PRZED stackiem BLE (audyt 2026-08-30): ble_advertising_init/ble_conn_params_init
+     * tworza timery wewnatrz *_init; dotychczasowa kolejnosc dzialala wylacznie dzieki
+     * APP_ADV_TIMEOUT=0 (advertising nie startowal timera przed app_timer_init). */
+    APP_ERROR_CHECK(app_timer_init());
+
     ble_stack_init();
     gap_params_init();
     APP_ERROR_CHECK(nrf_ble_gatt_init(&m_gatt, NULL));
@@ -337,14 +373,12 @@ int main(void)
     led_blink(4, 40, 80);
     nrf_delay_ms(700);
 
-    APP_ERROR_CHECK(app_timer_init());
     APP_ERROR_CHECK(app_timer_create(&m_poll_timer, APP_TIMER_MODE_REPEATED, poll_timeout_handler));
     APP_ERROR_CHECK(app_timer_start(m_poll_timer, APP_TIMER_TICKS(POLL_INTERVAL_MS), NULL));
     APP_ERROR_CHECK(app_timer_create(&m_sleep_timer, APP_TIMER_MODE_REPEATED, sleep_timeout_handler));
     APP_ERROR_CHECK(app_timer_start(m_sleep_timer, APP_TIMER_TICKS(SLEEP_TIMER_MS), NULL));
     rtt_diag_printf("S5 poll %ums ON, sleep %us", POLL_INTERVAL_MS, SLEEP_TIMEOUT_S);
 
-    uint8_t btn_cnt = 0;
     uint16_t vbt_log_div = 0;
 
     /* WDT uzbrojony na starcie main (K0); tu tylko feed (fault/SOS-loop => reset). */
@@ -354,11 +388,11 @@ int main(void)
             g_go_sleep = true;
         }
 
-        if (g_send_info && m_conn_handle != BLE_CONN_HANDLE_INVALID) {
+        if (g_info_req != 0 && m_conn_handle != BLE_CONN_HANDLE_INVALID) {
+            g_info_req--;                /* consume PRZED wysylka: nowe zadania z SWI nie przepadna */
             uint8_t info[6] = {0x22, 0x03, TRIKIG_FW_MAJOR, TRIKIG_FW_MINOR, TRIKIG_FW_PATCH, m_wire_mode};
             uint16_t hvx = sizeof(info);
             (void)ble_nus_data_send(&m_nus, info, &hvx, m_conn_handle);
-            g_send_info = false;
             rtt_diag_printf("CMD info -> mode v%u", m_wire_mode);
         }
 
@@ -368,12 +402,10 @@ int main(void)
             enter_system_off();
         }
 
-        if (btn_pressed()) {
-            /* TODO(audyt 027): >3 klikniec = placeholder pod przyszla funkcje (np. forced pairing reset). */
-            if (btn_cnt < 255) btn_cnt++;
-            if (btn_cnt == 3) { led_blink(2, 60, 60); idle_secs = 0; }
-        } else {
-            btn_cnt = 0;
+        if (g_btn_presses >= 3) {        /* SPEC 6: 3 wcisniecia = 2x mrug + reset licznika sleep */
+            g_btn_presses = 0;
+            led_blink(2, 60, 60);
+            idle_secs = 0;
         }
 
         while (ring_rd != ring_wr) {

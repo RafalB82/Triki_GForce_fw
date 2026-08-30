@@ -65,12 +65,13 @@ bool lsm6dsl_init(void)
     ok = reg_write(LSM_CTRL2_G,  LSM_CTRL2_G_V19)  && ok;
 
     /* readback + wyegzekwowanie (D-017): config musi siedziec, nie tylko byc zalogowany */
-    uint8_t rc1 = 0, rc2 = 0;
+    uint8_t rc1 = 0, rc2 = 0, rc3 = 0;
     ok = reg_read(LSM_CTRL1_XL, &rc1, 1) && ok;
     ok = reg_read(LSM_CTRL2_G,  &rc2, 1) && ok;
-    rtt_diag_printf("FW=" TRIKIG_FW_TAG " c1=%02x c2=%02x", rc1, rc2);
-    if (!ok || rc1 != LSM_CTRL1_XL_V19 || rc2 != LSM_CTRL2_G_V19) {
-        rtt_diag_printf("S2 config MISMATCH ok=%d rc1=%02x rc2=%02x", ok, rc1, rc2);
+    ok = reg_read(LSM_CTRL3_C,  &rc3, 1) && ok;   /* audyt 2026-08-30: BDU w readback (wczesniej CTRL3 bez kontroli) */
+    rtt_diag_printf("FW=" TRIKIG_FW_TAG " c1=%02x c2=%02x c3=%02x", rc1, rc2, rc3);
+    if (!ok || rc1 != LSM_CTRL1_XL_V19 || rc2 != LSM_CTRL2_G_V19 || rc3 != LSM_CTRL3_C_CFG) {
+        rtt_diag_printf("S2 config MISMATCH ok=%d rc1=%02x rc2=%02x rc3=%02x", ok, rc1, rc2, rc3);
         return false;
     }
     return true;

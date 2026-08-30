@@ -75,6 +75,7 @@ void vbt_on_frame(const uint8_t *raw12)
 
     /* stillness: ||a| - g| < th (norma, nie os!) — w spoczynku |a|=g w kazdej orientacji */
     int64_t p = (int64_t)s_lpf[0]*s_lpf[0] + (int64_t)s_lpf[1]*s_lpf[1] + (int64_t)s_lpf[2]*s_lpf[2];
+    if (p > (int64_t)UINT32_MAX) p = (int64_t)UINT32_MAX;   /* audyt 2026-08-30: 3 osie @ ~13g moga przepelnic uint32 (wrap = falszywy rest) */
     int32_t norm = isqrt32((uint32_t)p);
     int32_t dev = norm - (int32_t)TRIKIG_VBT_G_REF_Q88;
     if (dev < 0) dev = -dev;

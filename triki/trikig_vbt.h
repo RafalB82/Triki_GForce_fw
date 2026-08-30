@@ -34,6 +34,6 @@ void    vbt_reset(void);                    /* zero stanu; wywolac po imu init *
 void    vbt_on_frame(const uint8_t *raw12); /* feed: 12B z OUT 0x22 (gyro6+acc6 i16LE) */
 int32_t vbt_velocity_mms(void);             /* velocity os X [mm/s] (podpisane) */
 bool    vbt_moving(void);
-uint8_t vbt_flags(void);               /* bit0 moving, bit1 rest, bit2 bias-ready */                   /* stan detekcji ruchu */
+uint8_t vbt_flags(void);                    /* bit0 moving, bit1 rest, bit2 bias-calibrated */
 
 #endif /* TRIKIG_VBT_H */

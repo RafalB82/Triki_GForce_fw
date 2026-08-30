@@ -210,7 +210,10 @@ CFLAGS += -DSOFTDEVICE_PRESENT
 CFLAGS += -mcpu=cortex-m4
 CFLAGS += -mthumb -mabi=aapcs
 CFLAGS += -Wall
-CFLAGS += -DTRIKIG_RTT_DIAG=1
+# RTT diag: 1 = build deweloperski (default), 0 = produkcja (pelna cisza RTT).
+# Build produkcyjny: make release (audyt 2026-08-30 — wczesniej hexy release mialy RTT wlaczone).
+TRIKIG_RTT_DIAG ?= 1
+CFLAGS += -DTRIKIG_RTT_DIAG=$(TRIKIG_RTT_DIAG)
 CFLAGS += -mfloat-abi=soft
 # keep every function in a separate section, this allows linker to discard unused ones
 CFLAGS += -ffunction-sections -fdata-sections -fno-strict-aliasing
@@ -260,6 +263,11 @@ LIB_FILES += -lc -lnosys -lm
 # Default target - first one defined
 default: nrf52810_xxaa
 
+# Build produkcyjny: RTT OFF (make release; wynik w _build/nrf52810_xxaa.hex)
+.PHONY: release
+release:
+	$(MAKE) TRIKIG_RTT_DIAG=0
+
 # Print all targets that can be built
 help:
 	@echo following targets are available:
@@ -280,6 +288,7 @@ $(foreach target, $(TARGETS), $(call define_target, $(target)))
 # Flash the program
 flash: default
 	@echo Flashing: $(OUTPUT_DIRECTORY)/nrf52810_xxaa.hex
+	@echo UWAGA: app-only zaklada SoftDevice siedzacy @0x0 — po full erase najpierw 'make flash_softdevice'!
 	nrfjprog -f nrf52 --program $(OUTPUT_DIRECTORY)/nrf52810_xxaa.hex --sectorerase
 	nrfjprog -f nrf52 --reset
 

@@ -29,7 +29,9 @@
  */
 #define LSM_CTRL1_XL_V19  0x44u
 #define LSM_CTRL2_G_V19   0x4Cu
-#define LSM_CTRL3_C_CFG   0x44u   /* BDU + IF_INC */
+/* BDU(bit3) + IF_INC(bit2) = 0x0C (audyt 2026-08-30: wczesniejsze 0x44 ustawialo H_LACTIVE
+ * zamiast BDU — brak BDU = mozliwe rozdarte odczyty 12B przy zderzeniu burst z ODR). */
+#define LSM_CTRL3_C_CFG   0x0Cu
 
 #define LSM_WHO_AM_I_VAL  0x6Au
 
