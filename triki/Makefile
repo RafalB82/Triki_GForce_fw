@@ -222,6 +222,8 @@ TRIKIG_VBT_PROFILE ?= 1
 CFLAGS += -DTRIKIG_VBT_PROFILE=$(TRIKIG_VBT_PROFILE)
 TRIKIG_PIN_SCAN ?= 0
 CFLAGS += -DTRIKIG_PIN_SCAN=$(TRIKIG_PIN_SCAN)
+TRIKIG_DRDY_PROBE ?= 0
+CFLAGS += -DTRIKIG_DRDY_PROBE=$(TRIKIG_DRDY_PROBE)
 CFLAGS += -mfloat-abi=soft
 # keep every function in a separate section, this allows linker to discard unused ones
 CFLAGS += -ffunction-sections -fdata-sections -fno-strict-aliasing

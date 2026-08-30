@@ -41,6 +41,9 @@
  * v0.3.5: DRDY na INT2 (pin 9 ukladu wg datasheet ukladu — INT1 ukladu niepolaczony,
  * dlatego probe 0.3.3/0.3.4 nie widzial krawedzi); register INT2_CTRL (0x0E); probe
  * rozszerzona: pin P0.09/P0.10 x polaryzacja (drdy_mode 1-4).
+ * v0.3.10: DRDY zamkniete dla tego HW — scan [P] (29 pinow, INT1+INT2 wlaczone, readback
+ * OK) = zero krawedzi => zaden INT nie jest poprowadzony do nRF; probe domyslnie off
+ * (TRIKIG_DRDY_PROBE), akwizycja = polling (zwalidowany).
  * v0.3.9 (log wire v2 22:22): regresja 0.3.7 — nauka biasu w quasi-bezruchu pochlaniala
  * wolne rotacje (<=15dps) => wbias zatruty => propagacja nadrabiala w zla strone => rampa
  * do 15054; repro harness slowrot (FAIL przed, PASS po); nauka TYLKO przy pelnym rest I
@@ -600,11 +603,16 @@ int main(void)
 #if TRIKIG_PIN_SCAN
     pin_scan();
 #endif
+#if TRIKIG_DRDY_PROBE
+    /* 0.3.10: probe wylaczony domyslnie — scan 0.3.9 [P] pokazal, ze zaden INT ukladu
+     * nie jest poprowadzony do nRF na tym module (29 pinow x INT1+INT2, zero krawedzi).
+     * Akwizycja = polling (zwalidowany end-to-end). Probe zostaje dla nowego HW. */
     if (m_imu_ok && nrf_drv_gpiote_init() == NRF_SUCCESS && drdy_probe()) {
         /* DRDY aktywny: probki procesowane w main loop z timestampow ISR */
     } else {
         rtt_diag_printf("S2 DRDY off -> polling");
     }
+#endif
     batt_init();                                 /* F5: SAADC AIN2 + kalibracja offsetu (blokujaca ~ms) */
     uint16_t batt_mv_boot = batt_sample_mv();    /* pierwszy pomiar od razu (nie czekamy 1s ticka) */
     if (batt_mv_boot != 0) {
