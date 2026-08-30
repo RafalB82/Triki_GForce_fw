@@ -18,6 +18,11 @@
  * v0.2.0 (F5): SAADC bateria CR2032 (trikig_batt, AIN2/P0.04, dzielnik przez diode);
  * probkowanie 1s w sleep tick; ramka statusowa 22 04 (RX 20 17) = bat_mV u16LE;
  * flags v2 bit3 = low-battery (< TRIKIG_BATT_LOW_MV).
+ * v0.3.0 (plan VBT C1-C6): trikig_diag (liczniki dropow + okres probkowania + timingi
+ * DWT acq/dsp/ble); VBT: gravity tracking ACC+GYRO (filtr komplementarny, propagacja
+ * gyro + korekcja ACC gated |w|/innowacja), movement-axis (default X, vbt_set_axis),
+ * dt = 1/ODR jako parametr; detektor rest 1. rzedu ||lin|| < 0.3; harness offline
+ * tools/vbt_offline (5 scenariuszy PASS) — szczegoly bugow zlapanych w C6: trikig_vbt.c.
  */
 #include <stdint.h>
 #include <stdbool.h>
@@ -188,7 +193,7 @@ static void poll_timeout_handler(void * p_context)
     /* K5: VBT liczony NIEZALEZNIE od stanu ringu BLE (backpressure nie zatrzymuje calkowania) */
     if (!is_dup) {
         t0 = diag_cyc();
-        vbt_on_frame(raw);
+        vbt_on_frame(raw, TRIKIG_VBT_DT_104HZ_Q16);   /* C5: dt=1/ODR; C7 DRDY -> dt mierzony */
         diag_max16(&g_diag.dsp_us_max, diag_cyc_us(diag_cyc() - t0));   /* C1: czas DSP/VBT */
     }
 
