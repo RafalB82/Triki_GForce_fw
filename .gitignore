@@ -10,3 +10,4 @@ build.log
 *.hex
 !firmware/hex/*.hex
 tools/vbt_offline/vbt_offline
+Triki_GForce_fw_VBT_MCU_implementation_plan.md
