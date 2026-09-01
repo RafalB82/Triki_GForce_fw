@@ -26,7 +26,7 @@
 |---|---|---|
 | P0.05 | I2C SDA (bit-bang) | open-drain S0D1 + pullup wew. |
 | P0.06 | I2C SCL (bit-bang) | open-drain S0D1 + pullup wew. |
-| P0.09 | **LSM INT1** | [P] pomiar plyty 2026-08-30 |
+| P0.09 | **LSM INT1 / SLEEP_CHANGE** (od 0.4.0: activity/inactivity → IDLE-CONNECTED, sekcja 6.1; GPIOTE TOGGLE + readback WAKE_UP_SRC) | [P] pomiar plyty 2026-08-30 |
 | P0.10 | **LSM INT2/DRDY** — DRDY_XL przez INT2_CTRL (0x0E), GPIOTE, timestamp probek | [P] pomiar plyty 2026-08-30 |
 | P0.04 | SAADC AIN2 — **Vbat (bez dzielnika 2×; pomiar FW 0.3.3)** | SAADC od 0.2.0, skala 1/1 od 0.3.3 |
 | P0.12 | prawdopodobny wylot dzielnika (drugie piete "node" z earlier notki — P0.04 i P0.12 to rozne node'y, rozwiazane pomiarem FW 0.3.3); wylacznie dzielnik — NIE CS flasha | nieuzywany przez FW |
@@ -63,6 +63,8 @@ INT2 DRDY (LSM6DSL INT2_CTRL=DRDY_XL, P0.10) -> GPIOTE ISR (timestamp TIMER1 @1M
   -> VBT on-frame (dt = t[n]-t[n-1]) -> ramka v1 14B / v2 19B -> ring[16]
      -> ble_nus_data_send -> PWA (WebBLE)
   fallback (watchdog 30ms): poll 9ms z dup-guardem
+IDLE-CONNECTED (0.4.0, sekcja 6.1): INT1 SLEEP_CHANGE (P0.09, TOGGLE) -> readback
+  WAKE_UP_SRC -> stan; DRDY/dane dalej @12.5Hz, dt z RTC1, watchdog 160ms
 ```
 
 ### Kolekcja (od 0.3.1)
@@ -90,8 +92,20 @@ Wartosci WYLACZNIE z tabeli datasheet (D-017); readback w RTT przy boocie.
 | CTRL2_G (0x11) | 0x4C | ODR 104Hz + FS_G=11=**2000dps** (monotoniczna) |
 | CTRL3_C (0x12) | 0x0C | BDU(bit3) + IF_INC(bit2). 0.1.0 i wcześniejsze: 0x44 = H_LACTIVE+IF_INC — **BDU nie ustawiony** (audyt 2026-08-30, readback c3 od 0.1.1) |
 | FIFO_CTRL5 (0x0A) | 0x00 | FIFO bypass (strategia poll; FIFO nie dziala na tym egzemplarzu bez LA — D-016) |
+| TAP_CFG (0x58) | 0xE1 (od 0.4.0) | INTERRUPTS_ENABLE(bit7) + **INACT_EN=11** (bity[6:5]: activity/inactivity) + LIR(bit0) — zrodlo IDLE-CONNECTED (sekcja 6) |
+| WAKE_UP_THS (0x5B) | 0x01 (od 0.4.0) | WK_THS=1 — prog budzenia; 1 LSB = FS_XL/2^6 = **250mg @ FS 16g** [?] do potwierdzenia postrojeniem na HW (start: najnizszy niezerowy) |
+| WAKE_UP_DUR (0x5C) | 0x04 (od 0.4.0) | SLEEP_DUR=4 — **4s bezruchu => inactivity** (pole 4-bit, max 15s) |
+| MD1_CFG (0x5E) | 0x80 (od 0.4.0) | bit7 **INT1_SLEEP_CHANGE** — zmiana stanu activity/inactivity na INT1 (P0.09) |
 
 Sensitivity: acc 2048 LSB/g, gyro 16.4 LSB/dps (= skale stocka, 1:1).
+
+Uwaga 0.4.0: INACT_EN=11 uruchamia sprzetowy activity/inactivity — po SLEEP_DUR bezruchu
+**HW sam** przechodzi w low-power (acc ODR 12.5Hz + gyro power-down), a po wykryciu ruchu
+**sam wraca** do CTRL1/CTRL2 (DS6207 6.5.2; auto-restore potwierdzic readbackiem na HW —
+[?] do pierwszego logu RTT). FW nigdy nie przelacza CTRL1/CTRL2 w runtime: reczne wartosci
+0x10/0x40 z pierwotnej propozycji gubily FS=16g => 8x zmiana czulosci vs kontrakt wire
+(2048 LSB/g). Stany w capability readback: WAKE_UP_SRC (0x1B) bit4 SLEEP_STATE_IA
+(odczyt kasuje LIR => kolejna zmiana daje nowy poziom na INT1).
 
 ---
 
@@ -130,6 +144,10 @@ Ramka 19B: [0x22][0x01] [seq_l seq_h] [gyro6] [acc6] [vel_l vel_h] [flags]
 również dropniętej przy pełnym ringu. Luki w seq są OCZEKIWANE i informacyjne (realny drop
 przed BUFOR), nie błędem transportu. Konsument (Triki_G pushDecoded) agreguje luki jako seqGaps.
 Brak połączenia BLE = brak inkrementacji (to "nie zbieramy", nie drop).
+**IDLE-CONNECTED (od 0.4.0):** w trybie idle (sekcja 6) stream biegnie dalej @12.5Hz —
+seq CIĄGŁY (bez luk! licznik liczy każdą próbkę), zmienia się tylko TEMPO (104→12.5/s).
+Host widzi wolniejszy strumień + flags bit1 (rest) — to NIE jest drop i NIE wymaga
+żadnej zmiany parsera; ewentualne luki przy przejściu ODR są pojedyncze i informacyjne.
 - Host: acc_si = n / 2048 * 9.80665 [m/s^2]; gyro_dps = n / 16.4.
 - PWA eksportuje SI — |a|~9.81 w spoczynku jest POPRAWNE (D-017 pkt 5).
 - Zmiana layoutu/skali = decyzja cross-project z koordynacja Triki_G (D-019). Wire v1 do wycofania w 1.0.0 (D-021).
@@ -158,6 +176,45 @@ flags v2 (ramka 19B): bit3 = low-battery (< 2400 mV, snapshot przy próbce); bit
 - Wybudzenie: BTN sense -> reset -> boot blink -> adv.
 - BTN w trybie czuwania: 3 wcisniecia = 2x mrug + reset licznika sleep (od 0.1.1: edge-detect + debounc 27ms w poll handler; wczesniej pojedyncze wcisniecie liczilo sie jako 3).
 - Pobor pradu: NIE mierzony (roadmap O-013 pkt 4).
+
+### 6.1 IDLE-CONNECTED (od 0.4.0) — low-power w trakcie sesji BLE
+
+Stan maszyny: **ACTIVE** (jak dotychczas) <-> **IDLE-CONNECTED** (HW inactivity).
+
+| Element | ACTIVE | IDLE-CONNECTED |
+|---|---|---|
+| IMU acc ODR | 104Hz (CTRL1_XL=0x44) | **12.5Hz low-power** (wymusza HW INACT_EN) |
+| IMU gyro | 104Hz (CTRL2_G=0x4C) | **power-down** (wymusza HW; OUT zamrozone BDU) |
+| DRDY INT2/P0.10 | wlaczony | **wlaczony** (stream dalej, patrz nizej) |
+| INT1/P0.09 | nasluch SLEEP_CHANGE (TOGGLE) | j.w. |
+| BLE stream | 19B @104/s | **19B @12.5/s** (seq ciagly, tylko wolniejszy) |
+| Conn params | ppcp 7.5-15ms, lat 0 | **150ms, latency 4** (best-effort) |
+| VBT | pelny | integracja/idle: acc-only; **propagacja gyro + nauka biasu OFF** (zamrozony OUT) |
+| Wejscie | activity (INT1 + readback WAKE_UP_SRC) | **4s bezruchu** (SLEEP_DUR, WK_THS=250mg) |
+| Wyjscie | 4s bezruchu => inactivity | **ruch > prog => activity** (HW auto-restore ODR) |
+
+Zasady:
+- Przejsciami steruje **HW** (INACT_EN); FW synchronizuje sie readbackiem WAKE_UP_SRC
+  przy kazdym eventcie INT1 i przy connect (D-017: nie ufac polaryzacji krawedzi).
+- DRDY zostaje wlaczony w IDLE — stream 19B biegnie dalej @12.5Hz; BLE zyje bez
+  keep-alive (SoftDevice utrzymuje lacze pustymi conn eventami). Wylaczenie DRDY
+  odrzucone: BDU trzymaloby linie HIGH bez odczytow (fneg 0.3.11).
+- Watchdog DRDY w IDLE: **160ms na RTC1** (okno TIMER1 16-bit 65.5ms nie miesci
+  okresu 80ms); dt w IDLE liczony z RTC1 (ticks*2 = q16.16 dokladnie), clamps
+  40-120ms, gap 200ms => twardy ZUPT.
+- Conn params przez `ble_conn_params_change_conn_params` (modul SDK sam pilnuje
+  negocjacji z budzetem prob; odmowa hosta = bezszkodowa — lacze chodzi na tym,
+  co dal central). Licznik diag: `idle_cp_fail`.
+- IDLE aktywne tylko przy potwierdzonym DRDY (drdy_mode!=0); probe P0.10 wygrywa
+  przed rejestracja INT1 (bez konfliktu kanalow GPIOTE).
+- Disconnect w IDLE: flaga w dol, **IMU zostaje w low-power HW** (kapsel lezy —
+  oszczednosc sluszna takze bez polaczenia); sleep 300s bez zmian. Reconnect:
+  sync stanu z readback przy CONNECTED.
+- Wake latency [?]: INT1 @12.5Hz (do 80ms) + gyro turn-on (~70-80ms po power-down)
+  => ~150ms slabego okna na starcie ruchu; VBT pokrywa gap-ZUPT; wplyw na repy
+  do rozstrzygniecia kryterium F3 (>=90% count vs Triki_G).
+- Pobor pradu IDLE [?]: estymata ~0.3-0.5mA (gyro PD ~-0.6mA, radio 150ms/lat4);
+  do pomiaru PPK (O-013 pkt 4). SYSTEMOFF pozostaje jedynym trybem pelen-bateria.
 
 ---
 
@@ -209,7 +266,7 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 | Expose | API wewnetrzne; pole vel/flags wire v2 bez zmian |
 
 ---
-## 11. Znane ograniczenia (stan 0.3.11)
+## 11. Znane ograniczenia (stan 0.4.0)
 
 1. Duplikaty probek — ZROBIONE 0.3.1 (DRDY identyfikuje probki; memcmp = tylko diagnostyka; w fallback polling dup-guard nadal aktywny).
 2. Brak backpressure: NRF_ERROR_RESOURCES = drop ramki (brak buforowania na conn interval) [O-013 pkt 2].
@@ -222,6 +279,13 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 11. SAADC fail był cichy (audyt F/G) — od 0.3.2 licznik `sadc` w diag + guard sum==0; OFFSET_MV nadal = 0 (DO KALIBRACJI na egzemplarzu, SPEC 5.2).
 12. `bdrop` = 100% w logu 0.3.3 => prawdopodobnie klient bez subskrypcji CCCD (NRF_ERROR_INVALID_STATE); od 0.3.4 FW loguje kod pierwszego bledu (`BLE send err=0x..`, 8 = INVALID_STATE). Do potwierdzenia z subskrypcja PWA — bdrop ma byc ~0 przy streamie.
 13. DWT->CYCCNT nie istnieje na nRF52810 — czas: TIMER1 @1MHz; watchdog DRDY 30ms i dt znów zywe od 0.3.4.
+14. IDLE-CONNECTED (0.4.0) [?]: (a) WK_THS LSB @FS16g=250mg przyjeta z DS6207 (FS/2^6) —
+    potwierdic postrojeniem na HW; (b) auto-restore ODR po activity — potwierdzic readbackiem
+    CTRL1/CTRL2 w logu RTT; (c) wake latency ~150ms (INT1 @12.5Hz + gyro turn-on) — wplyw na
+    detekcje repow rozstrzygnie F3; (d) zysk energetyczny estymatyczny do pomiaru PPK (O-013);
+    (e) przy polaczeniu central mogacy narzucic wlasne conn params — IDLE wtedy bez zysku
+    radiowego (dziala dalej, tylko bez oszczednosci). VBT w IDLE nie liczy propagacji gyro
+    (zamrozone OUT) — velocity w trakcie idle = 0, po activity lampa na 1 frame (dt nominal).
 8. m_stream_on zawsze true po starcie (init-komenda tylko potwierdza).
 9. v21/v22 bez logow PWA i testow terenowych (produkcja pozostaje v19; v21 boot zielony).
 
