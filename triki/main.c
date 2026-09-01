@@ -41,6 +41,17 @@
  * v0.3.5: DRDY na INT2 (pin 9 ukladu wg datasheet ukladu — INT1 ukladu niepolaczony,
  * dlatego probe 0.3.3/0.3.4 nie widzial krawedzi); register INT2_CTRL (0x0E); probe
  * rozszerzona: pin P0.09/P0.10 x polaryzacja (drdy_mode 1-4).
+ * v0.4.2 (smoke v0.4.1 [P], log RTT 2026-09-01): (1) dtf +1/probke w IDLE — RTC1
+ * przy app_timer2 ma PRESCALER=1 => 16384Hz (61.035us/tick), nie 32768Hz; progi
+ * IDLE przeliczone (min 655/max 1966/wdt 2621/gap 3277), dt q16.16 = ticks*4
+ * (dokladne: 2^16/2^14). Odkrycie uboczne: DT_GAP_TICKS 1966 = de facto 120ms
+ * (komentarz 60ms bledny od 0.3.4 — ACTIVE nieczuly, zostaje). (2) cpfail +1/
+ * przejscie — readback WAKE_UP_SRC kasuje LIR, TOGGLE lapie deassert => drugi
+ * event z tym samym stanem => ponowny change_conn_params = BUSY; idle_cp_apply
+ * gated na zmiane stanu, connect-sync apply jawnie. (3) Obserwacje smoke: ruch
+ * powoli (<250mg WK_THS) NIE wybudza z IDLE (v rampuje do ~1100 mm/s @12.5Hz,
+ * ZUPT po powrocie do rest) — WK_THS do strojenia; wake burst: bdrop +~80 przy
+ * 104Hz na conn 150ms przed aplikacja restore (przejsciowe, self-heal).
  * v0.4.1 (smoke v0.4.0 [P], log RTT 2026-09-01): inact cfg=00 MISMATCH — reg_write/
  * reg_read (bb) po starcie TWIM NIE steruja magistrala (nrfx_twim_enable przejmuje
  * piny 5/6) => zapisy activity/inactivity po probe szly w pustke. Fix: runtime reg
@@ -147,14 +158,18 @@
 
 /* ---- v0.4.0 IDLE-CONNECTED: progi ODR-aware dla akwizycji 12.5Hz (okres 80ms) ----
  * Okno TIMER1 16-bit (65.5ms) NIE miesci okresu 80ms => dt i watchdog w IDLE na
- * RTC1 (30.5176us/tick, wrap 512s). q16.16 sekundy z tickow RTC1 = ticks*2 DOKLADNIE
- * (1 tick = 1/32768 s; <<16 => *2) — bez dzielenia. */
+ * RTC1. UWAGA [P] (log smoke 0.4.1): app_timer2 ustawia PRESCALER=1
+ * (APP_TIMER_CONFIG_RTC_FREQUENCY=1) => RTC1 = 32768/2 = 16384 Hz = 61.035us/tick
+ * (NIE 30.5us!). q16.16 sekundy z tickow = ticks*4 DOKLADNIE (2^16/2^14 = 4).
+ * Progi przeliczone na 61.035us/tick. (Stary DT_GAP_TICKS 1966 to de facto 120ms,
+ * nie 60ms jak w komentarzu — ACTIVE nieczuly na ta roznice, zostaje jak bylo.) */
 #define IDLE_ODR_HZ             12u         /* ~12.5Hz: dzielnik logu VBT w IDLE */
 #define IDLE_DT_125HZ_Q16       5243u       /* 1/12.5 s = 80ms q16.16 (nominal IDLE) */
-#define DT_IDLE_MIN_TICKS       1311u       /* 40ms (1311 x 30.5176us) */
-#define DT_IDLE_MAX_TICKS       3932u       /* 120ms — poza tym = probka zgubiona */
-#define IDLE_WDT_TICKS          5246u       /* watchdog DRDY w IDLE: 160ms (2x okres) */
-#define DT_IDLE_GAP_TICKS       6554u       /* gap > 200ms => twardy ZUPT (IDLE) */
+#define IDLE_RTC_TICK_US        61u         /* RTC1 tick [us] przy PRESCALER=1 (16384Hz) */
+#define DT_IDLE_MIN_TICKS       655u        /* 40ms (655 x 61.0356us) */
+#define DT_IDLE_MAX_TICKS       1966u       /* 120ms — poza tym = probka zgubiona */
+#define IDLE_WDT_TICKS          2621u       /* watchdog DRDY w IDLE: 160ms (2x okres) */
+#define DT_IDLE_GAP_TICKS       3277u       /* gap > 200ms => twardy ZUPT (IDLE) */
 #define IDLE_CP_INTERVAL_MS     150u        /* conn interval w IDLE; latency 4 => rzadkie eventy radiowe */
 #define IDLE_CP_LATENCY         4u
 
@@ -337,8 +352,13 @@ static void idle_connected_set(bool on)
                                                  * >30ms temu — odswiez, zeby watchdog ACTIVE
                                                  * nie strzelil na pierwszym oknie 104Hz */
         rtt_diag_printf(on ? "S6 inactive -> IDLE-CONNECTED" : "S6 activity -> ACTIVE");
+        idle_cp_apply();                        /* negocjacja parametrow dla nowego stanu */
     }
-    idle_cp_apply();                            /* reconnect w tym samym stanie tez chce cp */
+    /* v0.4.2: idle_cp_apply TYLKO przy zmianie stanu — readback WAKE_UP_SRC kasuje
+     * LIR => TOGGLE lapie deassert => drugi event z tym samym stanem; ponowny
+     * change_conn_params w locie = NRF_ERROR_BUSY => cpfail roslo +1/przejscie
+     * (log smoke 0.4.1). Reconnect w tym samym stanie: idle_cp_apply jawnie
+     * w konsumencie g_conn_sync_req. */
 }
 
 /* boot-probe DRDY: kandydujace piny nRF (P0.09/P0.10 — "G-klasa INT", SPEC 1) x polaryzacja;
@@ -497,15 +517,15 @@ static void process_sample(uint32_t ts_cyc, bool ts_valid)
         s_prev_ts_cyc = ts_cyc;
         s_prev_ts_valid = true;
     } else if (g_idle_connected) {
-        /* IDLE: dt z RTC1 (ticks x 2 => q16.16, dokladne); clamp na tickach.
-         * ts_cyc ignorowane (okno TIMER1 za krotkie dla 80ms). */
+        /* IDLE: dt z RTC1 (ticks x 4 => q16.16, dokladne przy 16384Hz); clamp na
+         * tickach. ts_cyc ignorowane (okno TIMER1 za krotkie dla 80ms). */
         if (s_prev_ts_valid) {
             uint32_t dt_ticks = (now_rtc - s_prev_rtc_base) & 0xFFFFFFu;
             if (dt_ticks < DT_IDLE_MIN_TICKS || dt_ticks > DT_IDLE_MAX_TICKS) {
                 g_diag.dt_faults++;
                 dt_ticks = (dt_ticks < DT_IDLE_MIN_TICKS) ? DT_IDLE_MIN_TICKS : DT_IDLE_MAX_TICKS;
             }
-            dt_q16 = (uint16_t)(dt_ticks * 2u);  /* 1 tick = 1/32768 s; <<16 == *2 */
+            dt_q16 = (uint16_t)(dt_ticks * 4u);  /* 16384 Hz: 2^16/2^14 = 4 (dokladne) */
         }
         s_prev_rtc_base = now_rtc;
         s_prev_ts_valid = true;
@@ -873,12 +893,14 @@ int main(void)
 
         /* v0.4.1: sync stanu IDLE po CONNECTED (zadanie ze SWI, I2C w main).
          * Pierwszy na purpose: przy connect kapsel mogl juz lezec w inactivity —
-         * host od pierwszej ramki dostaje wlasciwe ODR/conn params. */
+         * host od pierwszej ramki dostaje wlasciwe ODR/conn params. Przy stanie
+         * bez zmiany cp i tak trzeba odswiezyc (nowe polaczenie = nowe params). */
         if (g_conn_sync_req) {
             g_conn_sync_req = false;
             bool sleeping = false;
             if (lsm6dsl_inact_state(&sleeping)) {
-                idle_connected_set(sleeping);
+                if (sleeping == g_idle_connected) idle_cp_apply();
+                else                             idle_connected_set(sleeping);
             }
         }
 
