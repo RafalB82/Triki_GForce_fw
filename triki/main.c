@@ -41,6 +41,12 @@
  * v0.3.5: DRDY na INT2 (pin 9 ukladu wg datasheet ukladu — INT1 ukladu niepolaczony,
  * dlatego probe 0.3.3/0.3.4 nie widzial krawedzi); register INT2_CTRL (0x0E); probe
  * rozszerzona: pin P0.09/P0.10 x polaryzacja (drdy_mode 1-4).
+ * v0.4.1 (smoke v0.4.0 [P], log RTT 2026-09-01): inact cfg=00 MISMATCH — reg_write/
+ * reg_read (bb) po starcie TWIM NIE steruja magistrala (nrfx_twim_enable przejmuje
+ * piny 5/6) => zapisy activity/inactivity po probe szly w pustke. Fix: runtime reg
+ * access TWIM-aware (reg_write_t/reg_read_t, wzorzec read_motion z fallbackiem bb),
+ * sync readback przy CONNECTED przeniesiony ze SWI do main (g_conn_sync_req — I2C
+ * nie w kontekscie BLE handlera). Boot-init bez zmian (bb przed TWIM, stuck-bus).
  * v0.4.0 (IDLE-CONNECTED, plan 2026-09-01): HW activity/inactivity LSM6DSL —
  * TAP_CFG INACT_EN=11 + LIR, WK_THS=250mg @FS16g, SLEEP_DUR=4s, MD1_CFG bit7
  * SLEEP_CHANGE -> INT1/P0.09 (GPIOTE TOGGLE). Po SLEEP_DUR bezruchu HW SAM schodzi
@@ -281,6 +287,9 @@ static void drdy_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action)
  * g_idle_connected MIRRORUJE stan HW (przejscia lapane takze bez polaczenia —
  * GPIOTE zyje bez BLE), conn params aplikujemy osobno przy connect. */
 static volatile bool g_activity_event = false;   /* INT1 edge -> main */
+static volatile bool g_conn_sync_req = false;    /* v0.4.1: CONNECTED -> sync IDLE w main
+                                                  * (I2C readback NIE w kontekscie SWI —
+                                                  * ten sam wzorzec co g_info_req) */
 
 static void activity_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action)
 {
@@ -583,13 +592,9 @@ static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context)
             m_conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
             idle_secs = 0;
             s_exp_valid = false;                 /* C1: nowa sesja liczenia luk seq */
-            /* v0.4.0: kapsel mogl wejsc w inactivity w trakcie przerwy w polaczeniu
-             * (HW pracuje niezaleznie). Po connect zsynchronizuj IDLE ze stanem HW,
-             * zanim poplyna ramki — host od pierwszego frame'a ma wlasciwe ODR/cp. */
-            {
-                bool sleeping = false;
-                if (lsm6dsl_inact_state(&sleeping)) idle_connected_set(sleeping);
-            }
+            /* v0.4.1: kapsel mogl wejsc w inactivity w trakcie przerwy (HW niezalezny),
+             * ale readback WAKE_UP_SRC = I2C — NIE w kontekscie SWI. Zadanie do main. */
+            g_conn_sync_req = true;
             nrf_ble_qwr_conn_handle_assign(&m_qwr, m_conn_handle);
             break;
         case BLE_GAP_EVT_DISCONNECTED:
@@ -864,6 +869,17 @@ int main(void)
         if (btn_3) {                     /* SPEC 6: 3 wcisniecia = 2x mrug + reset licznika sleep */
             led_blink(2, 60, 60);
             idle_secs = 0;
+        }
+
+        /* v0.4.1: sync stanu IDLE po CONNECTED (zadanie ze SWI, I2C w main).
+         * Pierwszy na purpose: przy connect kapsel mogl juz lezec w inactivity —
+         * host od pierwszej ramki dostaje wlasciwe ODR/conn params. */
+        if (g_conn_sync_req) {
+            g_conn_sync_req = false;
+            bool sleeping = false;
+            if (lsm6dsl_inact_state(&sleeping)) {
+                idle_connected_set(sleeping);
+            }
         }
 
         /* v0.4.0: konsumpcja zmian stanu activity/inactivity (INT1 edge). Sync ze

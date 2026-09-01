@@ -62,6 +62,53 @@ static bool reg_read(uint8_t reg, uint8_t *dst, uint8_t len)
     return true;
 }
 
+/* v0.4.1: runtime reg access — TWIM-aware. Root-cause smoke v0.4.0 [P]: reg_write/
+ * reg_read (bb) po starcie TWIM NIE dzialaja — nrfx_twim_enable przejmuje piny
+ * 5/6, zapisy GPIO nie steruja magistrali => inact cfg=00 MISMATCH (log RTT
+ * 2026-09-01). W 0.3.x to bylo latentne (po probe nikt nie dotykal rejestrow).
+ * Wzorzec jak lsm6dsl_read_motion: TWIM jak zyje, fault => uninit (piny -> GPIO)
+ * i fallback bb; ban po 3 faultach. Boot-init zostaje na czystym bb (przed TWIM,
+ * dla stuck-bus recovery — C8). */
+static bool reg_write_t(uint8_t reg, uint8_t val)
+{
+    if (lsm6dsl_twim_init()) {
+        uint8_t buf[2] = { reg, val };
+        nrfx_err_t e = nrfx_twim_tx(&m_twi, LSM_ADDR, buf, 2, false);
+        if (e == NRFX_SUCCESS) {
+            m_twim_consecutive = 0;
+            return true;
+        }
+        if (g_diag.twim_faults < 0xFFFFFFFFu) g_diag.twim_faults++;
+        nrfx_twim_uninit(&m_twi);            /* piny 5/6 -> GPIO dla bb fallback */
+        m_twim_ready = false;
+        if (++m_twim_consecutive >= LSM_TWIM_BAN_FAULTS) {
+            m_twim_banned = true;
+            rtt_diag_printf("S2 TWIM banned after %u faults", g_diag.twim_faults);
+        }
+    }
+    return reg_write(reg, val);
+}
+
+static bool reg_read_t(uint8_t reg, uint8_t *dst, uint8_t len)
+{
+    if (lsm6dsl_twim_init()) {
+        nrfx_err_t e = nrfx_twim_tx(&m_twi, LSM_ADDR, &reg, 1, false);
+        if (e == NRFX_SUCCESS) e = nrfx_twim_rx(&m_twi, LSM_ADDR, dst, len);
+        if (e == NRFX_SUCCESS) {
+            m_twim_consecutive = 0;
+            return true;
+        }
+        if (g_diag.twim_faults < 0xFFFFFFFFu) g_diag.twim_faults++;
+        nrfx_twim_uninit(&m_twi);
+        m_twim_ready = false;
+        if (++m_twim_consecutive >= LSM_TWIM_BAN_FAULTS) {
+            m_twim_banned = true;
+            rtt_diag_printf("S2 TWIM banned after %u faults", g_diag.twim_faults);
+        }
+    }
+    return reg_read(reg, dst, len);
+}
+
 bool lsm6dsl_init(void)
 {
     uint8_t who = 0;
@@ -142,22 +189,23 @@ bool lsm6dsl_inactivity_enable(bool on)
      * gyro power-down), activity => auto-restore. FW nie przelacza CTRL1/CTRL2
      * recznie (miedzy innymi dlatego, ze reczne 0x10/0x40 z pierwotnej propozycji
      * gubilo FS=16g => 8x zmiana czulosci vs kontrakt wire 2048 LSB/g).
-     * LIR=1: poziom trzymamy do odczytu WAKE_UP_SRC (sync w lsm6dsl_inact_state). */
+     * LIR=1: poziom trzymamy do odczytu WAKE_UP_SRC (sync w lsm6dsl_inact_state).
+     * v0.4.1: TWIM-aware (wywolywane po probe — bb na przejetych pinach = MISMATCH). */
     uint8_t tap_cfg = on ? LSM_TAP_CFG_INACT : 0x00u;
     uint8_t wk_ths  = on ? LSM_WK_THS : 0x00u;
     uint8_t wk_dur  = on ? (uint8_t)LSM_SLEEP_DUR_S : 0x00u;
     uint8_t md1     = on ? LSM_MD1_SLEEP_CHG : 0x00u;
 
-    bool ok = reg_write(LSM_TAP_CFG, tap_cfg);
-    ok = reg_write(LSM_WAKE_UP_THS, wk_ths) && ok;
-    ok = reg_write(LSM_WAKE_UP_DUR, wk_dur) && ok;
-    ok = reg_write(LSM_MD1_CFG, md1) && ok;
+    bool ok = reg_write_t(LSM_TAP_CFG, tap_cfg);
+    ok = reg_write_t(LSM_WAKE_UP_THS, wk_ths) && ok;
+    ok = reg_write_t(LSM_WAKE_UP_DUR, wk_dur) && ok;
+    ok = reg_write_t(LSM_MD1_CFG, md1) && ok;
 
     uint8_t r_tap = 0, r_ths = 0, r_dur = 0, r_md1 = 0;
-    ok = reg_read(LSM_TAP_CFG, &r_tap, 1) && ok;
-    ok = reg_read(LSM_WAKE_UP_THS, &r_ths, 1) && ok;
-    ok = reg_read(LSM_WAKE_UP_DUR, &r_dur, 1) && ok;
-    ok = reg_read(LSM_MD1_CFG, &r_md1, 1) && ok;
+    ok = reg_read_t(LSM_TAP_CFG, &r_tap, 1) && ok;
+    ok = reg_read_t(LSM_WAKE_UP_THS, &r_ths, 1) && ok;
+    ok = reg_read_t(LSM_WAKE_UP_DUR, &r_dur, 1) && ok;
+    ok = reg_read_t(LSM_MD1_CFG, &r_md1, 1) && ok;
     rtt_diag_printf("S2 inact cfg=%02x ths=%02x dur=%02x md1=%02x", r_tap, r_ths, r_dur, r_md1);
     if (!ok || r_tap != tap_cfg || r_ths != wk_ths || r_dur != wk_dur || r_md1 != md1) {
         rtt_diag_printf("S2 inact MISMATCH ok=%d tap=%02x ths=%02x dur=%02x md1=%02x",
@@ -171,9 +219,11 @@ bool lsm6dsl_inact_state(bool *sleeping)
 {
     /* Readback stanu z HW (D-017): SLEEP_STATE_IA=1 => uklad w inactivity (low-power).
      * Odczyt WAKE_UP_SRC kasuje LIR => kolejna zmiana stanu wygeneruje nowy poziom
-     * na INT1 (GPIOTE TOGGLE/LOTOHI zlapie krawedz). */
+     * na INT1 (GPIOTE TOGGLE/LOTOHI zlapie krawedz).
+     * v0.4.1: TWIM-aware + wywolywane z petli glownej (NIE ze SWI — I2C w kontekscie
+     * SoftDevice IRQ zakazane; sync przy CONNECTED przeniesiony do main loop). */
     uint8_t src = 0;
-    if (!reg_read(LSM_WAKE_UP_SRC, &src, 1)) return false;
+    if (!reg_read_t(LSM_WAKE_UP_SRC, &src, 1)) return false;
     *sleeping = ((src & 0x10u) != 0u);
     return true;
 }
