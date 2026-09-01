@@ -204,9 +204,9 @@ Zasady:
 - DRDY zostaje wlaczony w IDLE — stream 19B biegnie dalej @12.5Hz; BLE zyje bez
   keep-alive (SoftDevice utrzymuje lacze pustymi conn eventami). Wylaczenie DRDY
   odrzucone: BDU trzymaloby linie HIGH bez odczytow (fneg 0.3.11).
-- Watchdog DRDY w IDLE: **160ms na RTC1** (okno TIMER1 16-bit 65.5ms nie miesci
-  okresu 80ms); dt w IDLE liczony z RTC1 (ticks*2 = q16.16 dokladnie), clamps
-  40-120ms, gap 200ms => twardy ZUPT.
+| Watchdog DRDY w IDLE: **160ms na RTC1** (okno TIMER1 16-bit 65.5ms nie miesci
+  okresu 80ms; RTC1 @16384Hz — patrz 11.14(g)); dt w IDLE liczony z RTC1
+  (ticks*4 = q16.16 dokladnie), clamps 40-120ms, gap 200ms => twardy ZUPT.
 - Conn params przez `ble_conn_params_change_conn_params` (modul SDK sam pilnuje
   negocjacji z budzetem prob; odmowa hosta = bezszkodowa — lacze chodzi na tym,
   co dal central). Licznik diag: `idle_cp_fail`.
@@ -284,17 +284,25 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
 11. SAADC fail był cichy (audyt F/G) — od 0.3.2 licznik `sadc` w diag + guard sum==0; OFFSET_MV nadal = 0 (DO KALIBRACJI na egzemplarzu, SPEC 5.2).
 12. `bdrop` = 100% w logu 0.3.3 => prawdopodobnie klient bez subskrypcji CCCD (NRF_ERROR_INVALID_STATE); od 0.3.4 FW loguje kod pierwszego bledu (`BLE send err=0x..`, 8 = INVALID_STATE). Do potwierdzenia z subskrypcja PWA — bdrop ma byc ~0 przy streamie.
 13. DWT->CYCCNT nie istnieje na nRF52810 — czas: TIMER1 @1MHz; watchdog DRDY 30ms i dt znów zywe od 0.3.4.
-14. IDLE-CONNECTED (0.4.0/0.4.1): (a) WK_THS LSB @FS16g=250mg przyjeta z DS6207 (FS/2^6) —
-    potwierdzic postrojeniem na HW (aktualnie prog dziala — wejscia/wyjscia lapane);
-    (b) auto-restore ODR po activity — POTWIERDZONY [P] 2026-09-01 (tempo wraca 103.7/s);
-    (c) wake latency ~150ms (INT1 @12.5Hz + gyro turn-on) — wplyw na detekcje repow
-    rozstrzygnie F3; (d) zysk energetyczny do pomiaru PPK (O-013); (e) przy polaczeniu
-    central mogacy narzucic wlasne conn params — IDLE wtedy bez zysku radiowego (dziala
-    dalej, tylko bez oszczednosci). VBT w IDLE nie liczy propagacji gyro (zamrozone OUT)
-    — velocity w trakcie idle = 0, po activity lampa na 1 frame (dt nominal).
+14. IDLE-CONNECTED (0.4.0/0.4.1/0.4.2): (a) WK_THS LSB @FS16g=250mg przyjeta z DS6207
+    (FS/2^6) — [P] smoke 0.4.1: ruch powoli (<250mg) NIE wybudza z IDLE (velocity
+    rampuje @12.5Hz do ~1100 mm/s, ZUPT gasi po powrocie do rest); WK_THS do strojenia
+    na potrzeby UX; (b) auto-restore ODR po activity — POTWIERDZONY [P] 2026-09-01
+    (tempo wraca 103.7/s); (c) wake latency ~150ms (INT1 @12.5Hz + gyro turn-on) —
+    wplyw na detekcje repow rozstrzygnie F3; (d) zysk energetyczny do pomiaru PPK
+    (O-013); (e) przy polaczeniu central mogacy narzucic wlasne conn params — IDLE
+    wtedy bez zysku radiowego (dziala dalej, tylko bez oszczednosci). VBT w IDLE nie
+    liczy propagacji gyro (zamrozone OUT) — velocity w trakcie idle = 0, po activity
+    lampa na 1 frame (dt nominal).
     (f) 0.4.1: runtime reg access musi byc TWIM-aware (reg_write_t/reg_read_t) — bb
     po nrfx_twim_enable nie steruje magistrala (latent bug od C8, ujawniony przez
     zapis inactivity; log smoke 0.4.0: cfg=00 MISMATCH).
+    (g) 0.4.2 [P]: RTC1 przy app_timer2 = 16384Hz (PRESCALER=1, 61.035us/tick) —
+    progi RTC-based musza liczyc sie z ta czestotliwoscia; DT_GAP_TICKS 1966 od
+    0.3.4 to de facto 120ms (nie 60ms — komentarz bledny, ACTIVE nieczuly na roznice).
+    (h) 0.4.2 [P]: cpfail +1/przejscie — readback WAKE_UP_SRC kasuje LIR => TOGGLE
+    lapie deassert => drugi event z tym samym stanem => ponowna negocjacja cp = BUSY;
+    idle_cp_apply gated na zmiane stanu (0.4.2).
 8. m_stream_on zawsze true po starcie (init-komenda tylko potwierdza).
 9. v21/v22 bez logow PWA i testow terenowych (produkcja pozostaje v19; v21 boot zielony).
 
