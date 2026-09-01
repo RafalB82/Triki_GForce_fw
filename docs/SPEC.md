@@ -218,8 +218,13 @@ Zasady:
 - Wake latency [?]: INT1 @12.5Hz (do 80ms) + gyro turn-on (~70-80ms po power-down)
   => ~150ms slabego okna na starcie ruchu; VBT pokrywa gap-ZUPT; wplyw na repy
   do rozstrzygniecia kryterium F3 (>=90% count vs Triki_G).
-- Pobor pradu IDLE [?]: estymata ~0.3-0.5mA (gyro PD ~-0.6mA, radio 150ms/lat4);
-  do pomiaru PPK (O-013 pkt 4). SYSTEMOFF pozostaje jedynym trybem pelen-bateria.
+- Pobor pradu [P] (multimetr, 2026-09-01, FW 0.4.2/0.4.3): **~0.4mA w IDLE**
+  (uspienie po bezczynnosci; estymata 0.3-0.5mA potwierdzona) i ~0.4mA przy
+  advertising — obie sceny w tym samym rzedzie wielkosci (radio + IMU 12.5Hz LP +
+  gyro PD + MCU sen). Szacunek zysku vs 0.3.x connected (~1.5-2mA): **~4-5x**.
+  CR2032 220mAh / 0.4mA ~ 550h ~ 23 dni ciaglego IDLE. DO ZMIERZENIA: ACTIVE
+  streaming (polaczenie+ruch), SYSTEMOFF (oczekiwane uA). Uwaga: 20s stabilizacji
+  pomiaru nie odpowiada zadnemu przejsciu FW (IDLE wchodzi po 4s — SLEEP_DUR).
 
 ---
 
@@ -289,8 +294,11 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
     rampuje @12.5Hz do ~1100 mm/s, ZUPT gasi po powrocie do rest); WK_THS do strojenia
     na potrzeby UX; (b) auto-restore ODR po activity — POTWIERDZONY [P] 2026-09-01
     (tempo wraca 103.7/s); (c) wake latency ~150ms (INT1 @12.5Hz + gyro turn-on) —
-    wplyw na detekcje repow rozstrzygnie F3; (d) zysk energetyczny do pomiaru PPK
-    (O-013); (e) przy polaczeniu central mogacy narzucic wlasne conn params — IDLE
+    wplyw na detekcje repow rozstrzygnie F3; (d) zysk energetyczny [P] multimetr
+    2026-09-01: **IDLE ~0.4mA** (estymata 0.3-0.5 potwierdzona; ~4-5x mniej niz
+    0.3.x connected; CR2032 ~23 dni ciaglego IDLE); do zmierzenia: ACTIVE streaming,
+    SYSTEMOFF (uA), PPK dla profilu; (e) przy polaczeniu central mogacy narzucic
+    wlasne conn params — IDLE
     wtedy bez zysku radiowego (dziala dalej, tylko bez oszczednosci). VBT w IDLE nie
     liczy propagacji gyro (zamrozone OUT) — velocity w trakcie idle = 0, po activity
     lampa na 1 frame (dt nominal).
