@@ -41,6 +41,18 @@
  * v0.3.5: DRDY na INT2 (pin 9 ukladu wg datasheet ukladu — INT1 ukladu niepolaczony,
  * dlatego probe 0.3.3/0.3.4 nie widzial krawedzi); register INT2_CTRL (0x0E); probe
  * rozszerzona: pin P0.09/P0.10 x polaryzacja (drdy_mode 1-4).
+ * v0.4.0 (IDLE-CONNECTED, plan 2026-09-01): HW activity/inactivity LSM6DSL —
+ * TAP_CFG INACT_EN=11 + LIR, WK_THS=250mg @FS16g, SLEEP_DUR=4s, MD1_CFG bit7
+ * SLEEP_CHANGE -> INT1/P0.09 (GPIOTE TOGGLE). Po SLEEP_DUR bezruchu HW SAM schodzi
+ * do low-power (acc 12.5Hz LP + gyro power-down), activity => auto-restore
+ * (DS6207 6.5.2 — do potwierdzenia readbackiem na HW). FW: sync stanu HW readbackiem
+ * WAKE_UP_SRC (event INT1 + connect), watchdog DRDY w IDLE 160ms na
+ * RTC1 (okno TIMER1 65.5ms nie miesci okresu 80ms), dt w IDLE z RTC1
+ * (ticks*2 => q16.16 dokladnie), gap 200ms, vbt_idle() wylacza propagacje gyro +
+ * nauke biasu (OUT zamrozone BDU w power-down — klasa ryzyka slowrot), stream 19B
+ * leci dalej @12.5Hz (luki seq = ODR, kontrakt 5.1), conn params 150ms/lat4 w
+ * IDLE i restore 7.5-15ms po activity (best-effort: modul ble_conn_params moze
+ * jednorazowo cofnac — licznik idle_cp_fail). IDLE tylko przy DRDY na P0.10.
  * v0.3.11 (pomiar plyty [P]: INT1->P0.09, INT2->P0.10): wczesniejszy "brak krawedzi"
  * byl FALSE-NEGATIVE — DRDY z BDU zalega HIGH dopoki nikt nie czyta OUT, a scan/probe
  * biegly przed startem pollingu (zero odczytow => zero rosnacych krawedzi). Fix: okna
@@ -124,8 +136,21 @@
 #define DT_MIN_US               4000u       /* clamp dt (P3): < 250 Hz nie zdarzy sie przy 104 ODR */
 #define DT_MAX_US               40000u      /* > 25 Hz = probka zgubiona */
 #define DT_GAP_TICKS            1966u       /* gap > 60ms (1966x30.5us RTC1) => twardy ZUPT;
-                                             * 60ms zamiast 100ms: timebase TIMER1 16-bit wrap 65.5ms */
+                                              * 60ms zamiast 100ms: timebase TIMER1 16-bit wrap 65.5ms */
 #define IMU_ODR_HZ              104u        /* dzielnik logu diag ~1s; zmiana ODR => popraw tu (F2) */
+
+/* ---- v0.4.0 IDLE-CONNECTED: progi ODR-aware dla akwizycji 12.5Hz (okres 80ms) ----
+ * Okno TIMER1 16-bit (65.5ms) NIE miesci okresu 80ms => dt i watchdog w IDLE na
+ * RTC1 (30.5176us/tick, wrap 512s). q16.16 sekundy z tickow RTC1 = ticks*2 DOKLADNIE
+ * (1 tick = 1/32768 s; <<16 => *2) — bez dzielenia. */
+#define IDLE_ODR_HZ             12u         /* ~12.5Hz: dzielnik logu VBT w IDLE */
+#define IDLE_DT_125HZ_Q16       5243u       /* 1/12.5 s = 80ms q16.16 (nominal IDLE) */
+#define DT_IDLE_MIN_TICKS       1311u       /* 40ms (1311 x 30.5176us) */
+#define DT_IDLE_MAX_TICKS       3932u       /* 120ms — poza tym = probka zgubiona */
+#define IDLE_WDT_TICKS          5246u       /* watchdog DRDY w IDLE: 160ms (2x okres) */
+#define DT_IDLE_GAP_TICKS       6554u       /* gap > 200ms => twardy ZUPT (IDLE) */
+#define IDLE_CP_INTERVAL_MS     150u        /* conn interval w IDLE; latency 4 => rzadkie eventy radiowe */
+#define IDLE_CP_LATENCY         4u
 
 BLE_NUS_DEF(m_nus, NRF_SDH_BLE_TOTAL_LINK_COUNT);
 NRF_BLE_GATT_DEF(m_gatt);
@@ -224,11 +249,14 @@ static volatile uint16_t s_probe_cnt = 0;            /* licznik krawedzi probe (
                                                      * do progu 5 — probe NIGDY nie mogla przejsc) */
 static volatile bool     s_probing = false;
 static volatile uint8_t  s_fallback_req = 0;         /* zadania watchdog/poll -> main (single-producer) */
+static volatile bool     g_idle_connected = false;   /* v0.4.0: sesja w trybie IDLE-CONNECTED
+                                                       * (definicja logiki: idle_connected_set nizej) */
 static uint32_t s_last_sample_cyc = 0;               /* TIMER1 us @ ostatniej probki (watchdog DRDY) */
 static uint32_t s_last_rtc = 0;                      /* RTC1 tick @ ostatniej probki (detekcja gapow > 65.5ms okna TIMER1) */
 static bool     s_rtc_valid = false;
 static uint32_t s_prev_ts_cyc = 0;                   /* C7: poprzedni timestamp (dt) */
 static bool     s_prev_ts_valid = false;
+static uint32_t s_prev_rtc_base = 0;                 /* v0.4.0: baza dt w IDLE (RTC1 ticks) */
 
 static void drdy_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action)
 {
@@ -243,6 +271,65 @@ static void drdy_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action)
         s_drdy_ts[wr] = diag_cyc();                  /* [us] timestamp = czas DRDY (nie odczytu) */
         s_drdy_wr = next;
     }                                                /* pelne FIFO: drop (main opozniony; watchdog pokryje) */
+}
+
+/* ---- v0.4.0 IDLE-CONNECTED: INT1/P0.09 = SLEEP_CHANGE (activity/inactivity) ----
+ * HW (INACT_EN=11): po SLEEP_DUR bezruchu acc -> 12.5Hz LP + gyro power-down,
+ * activity => auto-restore. ISR tylko flaguje (ten sam wzorzec co drdy_handler);
+ * konsumpcja + sync readbackiem WAKE_UP_SRC w petli glownej — NIE w ISR (I2C w
+ * kontekscie GPIOTE zakazane, tak jak DRDY czyta dane dopiero w main).
+ * g_idle_connected MIRRORUJE stan HW (przejscia lapane takze bez polaczenia —
+ * GPIOTE zyje bez BLE), conn params aplikujemy osobno przy connect. */
+static volatile bool g_activity_event = false;   /* INT1 edge -> main */
+
+static void activity_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action)
+{
+    (void)pin; (void)action;
+    if (s_probing) return;                     /* probe DRDY na P0.09? nie miesza sie */
+    g_activity_event = true;
+}
+
+/* v0.4.0: DRDY (INT2) zostaje WLACZONY takze w IDLE — stream 19B biegnie dalej
+ * @12.5Hz (seq ciagly, tylko wolniejszy — K4 licznik nie robi luk z powodu ODR),
+ * BLE zywe bez wymyslonych keep-alive (SoftDevice i tak utrzymuje lacze pustymi
+ * conn eventami). Wylaczenie DRDY w IDLE odrzucone: BDU trzymaloby linie HIGH bez
+ * odczytow (fneg 0.3.11) i szerzylo fallback-polling zamiast oszczednosci.
+ * Conn params przez ble_conn_params_change_conn_params (SDK 17.1.1): modul
+ * PRZEJMUJE nowe parametry jako preferowane i sam pilnuje egzekwowania z wlasnym
+ * budzetem prob (MAX_CP_COUNT) — bez recznego ping-pongu. ACTIVE = ppcp
+ * (7.5-15ms/lat0, sd_ble_gap_ppcp_set z conn_params_init), IDLE = 150ms/lat4.
+ * Odrzucenie przez hosta = bezszkodne (lacze chodzi na tym co central dal). */
+static void idle_cp_apply(void)
+{
+    /* dopasuj conn params do stanu IDLE — tylko przy zywym polaczeniu */
+    if (m_conn_handle == BLE_CONN_HANDLE_INVALID) return;
+    ble_gap_conn_params_t cp = {
+        .min_conn_interval = g_idle_connected ? MSEC_TO_UNITS(IDLE_CP_INTERVAL_MS, UNIT_1_25_MS)
+                                              : MIN_CONN_INTERVAL,
+        .max_conn_interval = g_idle_connected ? MSEC_TO_UNITS(IDLE_CP_INTERVAL_MS, UNIT_1_25_MS)
+                                              : MAX_CONN_INTERVAL,
+        .slave_latency     = g_idle_connected ? IDLE_CP_LATENCY : SLAVE_LATENCY,
+        .conn_sup_timeout  = CONN_SUP_TIMEOUT,
+    };
+    uint32_t err = ble_conn_params_change_conn_params(m_conn_handle, &cp);
+    if (err != NRF_SUCCESS && g_diag.idle_cp_fail < 0xFFFF) g_diag.idle_cp_fail++;
+}
+
+static void idle_connected_set(bool on)
+{
+    if (on != g_idle_connected) {
+        g_idle_connected = on;
+        g_diag.idle_state = (uint8_t)(on ? 1u : 0u);
+        if (g_diag.idle_trans < 0xFFFF) g_diag.idle_trans++;
+        vbt_idle(on);                           /* zamrozony gyro: bez propagacji/nauki biasu */
+        s_prev_ts_valid = false;               /* dt przez granice ODR nie ma sensu */
+        s_fallback_req = 0;                     /* nie wnosic starych zadan watchdogu */
+        if (!on) s_last_sample_cyc = diag_cyc();/* wyjscie: ostatnia probka IDLE mogla byc
+                                                 * >30ms temu — odswiez, zeby watchdog ACTIVE
+                                                 * nie strzelil na pierwszym oknie 104Hz */
+        rtt_diag_printf(on ? "S6 inactive -> IDLE-CONNECTED" : "S6 activity -> ACTIVE");
+    }
+    idle_cp_apply();                            /* reconnect w tym samym stanie tez chce cp */
 }
 
 /* boot-probe DRDY: kandydujace piny nRF (P0.09/P0.10 — "G-klasa INT", SPEC 1) x polaryzacja;
@@ -365,16 +452,21 @@ static void process_sample(uint32_t ts_cyc, bool ts_valid)
     g_diag.imu_dups += is_dup;
     if (!is_dup) g_diag.imu_samples++;
 
-    /* C7: dt = t[n]-t[n-1] z timestampow DRDY; clamp min/max + dt_fault; gap > 100ms
-     * => twardy ZUPT (reset integratora) i dt nominalny. */
-    uint16_t dt_q16 = TRIKIG_VBT_DT_104HZ_Q16;
+    /* C7: dt = t[n]-t[n-1] z timestampow DRDY; clamp min/max + dt_fault; gap > 60ms
+     * => twardy ZUPT (reset integratora) i dt nominalny.
+     * v0.4.0: dt ODR-aware — w IDLE (12.5Hz, okres 80ms) okno TIMER1 16-bit (65.5ms)
+     * jest ZA KROTKIE na timestampy ISR => dt z RTC1 (ticks x 2 = q16.16 sekundy,
+     * dokladne; nominal 80ms przy gapie), clamps 40-120ms, gap 200ms => twardy ZUPT.
+     * Timestampy DRDY z ACTIVE (TIMER1) po wejsciu w IDLE nie sa uzywane. */
+    uint16_t dt_q16 = g_idle_connected ? IDLE_DT_125HZ_Q16 : TRIKIG_VBT_DT_104HZ_Q16;
 
     /* detekcja gapow: RTC1 (app_timer, 30.5us/tick, wrap 512s) — niezalezna od 16-bit
      * okna TIMER1; gap => twardy ZUPT + dt nominalny (przegapiona probka nie wchodzi). */
     uint32_t now_rtc = NRF_RTC1->COUNTER;
+    uint32_t gap_ticks = g_idle_connected ? DT_IDLE_GAP_TICKS : DT_GAP_TICKS;
     if (s_rtc_valid) {
         uint32_t rtc_diff = (now_rtc - s_last_rtc) & 0xFFFFFFu;
-        if (rtc_diff > DT_GAP_TICKS) {
+        if (rtc_diff > gap_ticks) {
             g_diag.dt_faults++;
             vbt_reset_velocity();
             s_prev_ts_valid = false;             /* dt z timer-ow po gapie nie liczy sie */
@@ -383,7 +475,7 @@ static void process_sample(uint32_t ts_cyc, bool ts_valid)
     s_last_rtc = now_rtc;
     s_rtc_valid = true;
 
-    if (ts_valid && g_diag.drdy_mode != 0) {
+    if (ts_valid && g_diag.drdy_mode != 0 && !g_idle_connected) {
         if (s_prev_ts_valid) {
             uint32_t dt_us = (uint16_t)(ts_cyc - s_prev_ts_cyc);   /* wrap-safe (okno 65.5ms) */
             diag_period_us(dt_us);               /* min/avg/max okresu probkowania */
@@ -394,6 +486,19 @@ static void process_sample(uint32_t ts_cyc, bool ts_valid)
             dt_q16 = (uint16_t)(((uint64_t)dt_us << 16) / 1000000u);
         }
         s_prev_ts_cyc = ts_cyc;
+        s_prev_ts_valid = true;
+    } else if (g_idle_connected) {
+        /* IDLE: dt z RTC1 (ticks x 2 => q16.16, dokladne); clamp na tickach.
+         * ts_cyc ignorowane (okno TIMER1 za krotkie dla 80ms). */
+        if (s_prev_ts_valid) {
+            uint32_t dt_ticks = (now_rtc - s_prev_rtc_base) & 0xFFFFFFu;
+            if (dt_ticks < DT_IDLE_MIN_TICKS || dt_ticks > DT_IDLE_MAX_TICKS) {
+                g_diag.dt_faults++;
+                dt_ticks = (dt_ticks < DT_IDLE_MIN_TICKS) ? DT_IDLE_MIN_TICKS : DT_IDLE_MAX_TICKS;
+            }
+            dt_q16 = (uint16_t)(dt_ticks * 2u);  /* 1 tick = 1/32768 s; <<16 == *2 */
+        }
+        s_prev_rtc_base = now_rtc;
         s_prev_ts_valid = true;
     }
 
@@ -432,6 +537,13 @@ static void poll_timeout_handler(void * p_context)
 
     if (g_diag.drdy_mode == 0) {
         if (s_fallback_req < 255) s_fallback_req++;      /* tryb polling: probka co tick */
+    } else if (g_idle_connected) {
+        /* v0.4.0: watchdog DRDY w IDLE na RTC1 — TIMER1 16-bit (65.5ms) NIE miesci
+         * okresu 12.5Hz (80ms). Prog 160ms = 2x okres; zwolnienie zadan w main
+         * (kolejnosc single-producer jak dotad). */
+        if (((NRF_RTC1->COUNTER - s_last_rtc) & 0xFFFFFFu) > IDLE_WDT_TICKS) {
+            if (s_fallback_req < 255) s_fallback_req++;
+        }
     } else if ((uint16_t)(diag_cyc() - s_last_sample_cyc) > 30000u) {   /* 30ms, wrap-safe */
         if (s_fallback_req < 255) s_fallback_req++;      /* watchdog: DRDY milczy > 30ms */
     }
@@ -471,10 +583,21 @@ static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context)
             m_conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
             idle_secs = 0;
             s_exp_valid = false;                 /* C1: nowa sesja liczenia luk seq */
+            /* v0.4.0: kapsel mogl wejsc w inactivity w trakcie przerwy w polaczeniu
+             * (HW pracuje niezaleznie). Po connect zsynchronizuj IDLE ze stanem HW,
+             * zanim poplyna ramki — host od pierwszego frame'a ma wlasciwe ODR/cp. */
+            {
+                bool sleeping = false;
+                if (lsm6dsl_inact_state(&sleeping)) idle_connected_set(sleeping);
+            }
             nrf_ble_qwr_conn_handle_assign(&m_qwr, m_conn_handle);
             break;
         case BLE_GAP_EVT_DISCONNECTED:
             m_conn_handle = BLE_CONN_HANDLE_INVALID;
+            /* v0.4.0: koniec sesji — flaga IDLE w dol (gyro/ODR zostaja w HW: gdy
+             * kapsel lezy, oszczednosc jest wlasciwa takze bez polaczenia; sleep
+             * 300s liczony jak dotad). Conn params bez restore — brak polaczenia. */
+            idle_connected_set(false);
             break;
         case BLE_GAP_EVT_PHY_UPDATE_REQUEST: {
             ble_gap_phys_t const phys = {BLE_GAP_PHY_AUTO, BLE_GAP_PHY_AUTO};
@@ -630,6 +753,27 @@ int main(void)
         rtt_diag_printf("S2 DRDY off -> polling");
     }
 #endif
+    /* v0.4.0 IDLE-CONNECTED: nasluch INT1/P0.09 (SLEEP_CHANGE) — TYLKO po probe
+     * (drdy_probe inicjalizuje GPIOTE wlasnymi kanalami i sam probuje P0.09 —
+     * wczesniejsza rejestracja = konflikt kanalu). IDLE tylko przy zywym DRDY
+     * (drdy_mode != 0): fallback polling (zwykle awaryjny) zostaje bez IDLE.
+     * Polaryzacja TOGGLE — SLEEP_CHANGE zmienia poziom przy KAZDEJ zmianie stanu
+     * (inaktywnosc/activity), a wlasciwy stan i tak rozstrzyga readback
+     * WAKE_UP_SRC w petli glownej (D-017: nie ufac polaryzacji krawedzi). */
+    if (m_imu_ok && g_diag.drdy_mode != 0) {
+        nrf_drv_gpiote_in_config_t act_cfg = NRFX_GPIOTE_CONFIG_IN_SENSE_TOGGLE(true);
+        if (nrf_drv_gpiote_in_init(PIN_IMU_INT1, &act_cfg, activity_handler) == NRF_SUCCESS) {
+            nrf_drv_gpiote_in_event_enable(PIN_IMU_INT1, true);
+            if (lsm6dsl_inactivity_enable(true)) {
+                rtt_diag_printf("S2 idle-detect ON (INT1/P0.09)");
+            } else {
+                nrf_drv_gpiote_in_event_disable(PIN_IMU_INT1);
+                rtt_diag_printf("S2 idle-detect CFG FAIL (IDLE off)");
+            }
+        } else {
+            rtt_diag_printf("S2 idle-detect GPIOTE FAIL (IDLE off)");
+        }
+    }
     batt_init();                                 /* F5: SAADC AIN2 + kalibracja offsetu (blokujaca ~ms) */
     uint16_t batt_mv_boot = batt_sample_mv();    /* pierwszy pomiar od razu (nie czekamy 1s ticka) */
     if (batt_mv_boot != 0) {
@@ -722,6 +866,18 @@ int main(void)
             idle_secs = 0;
         }
 
+        /* v0.4.0: konsumpcja zmian stanu activity/inactivity (INT1 edge). Sync ze
+         * stanem HW przez readback WAKE_UP_SRC (krawedz mówi ZE sie zmienilo, nie
+         * DOKAD — D-017: nie ufac polaryzacji). Odczyt kasuje LIR => kolejna zmiana
+         * wygeneruje kolejny poziom na INT1. */
+        if (g_activity_event) {
+            g_activity_event = false;
+            bool sleeping = false;
+            if (lsm6dsl_inact_state(&sleeping)) {
+                idle_connected_set(sleeping);
+            }
+        }
+
         /* C7: probki z FIFO timestampow DRDY (ISR -> main). Niepolaczony: drain-and-discard,
          * zeby po connect nie policzyc dt ze starych timestampow. */
         while (s_drdy_wr != s_drdy_rd) {
@@ -790,9 +946,11 @@ int main(void)
             }
             ring_rd = (uint8_t)((ring_rd + 1) % RING_SLOTS);
 #if TRIKIG_RTT_DIAG
-            if (++vbt_log_div >= IMU_ODR_HZ) {   /* ~1s: velocity do walidacji vs PWA */
+            /* ~1s wg ODR: 104Hz w ACTIVE (dzielnik 104), ~12.5Hz w IDLE (dzielnik 12) */
+            uint16_t log_div = g_idle_connected ? IDLE_ODR_HZ : IMU_ODR_HZ;
+            if (++vbt_log_div >= log_div) {
                 vbt_log_div = 0;
-                rtt_diag_printf("VBT v=%d mm/s mv=%u dup=%u", (int)vbt_velocity_mms(), (unsigned)vbt_moving(), (unsigned)s_dup_count);
+                rtt_diag_printf("VBT v=%d mm/s mv=%u dup=%u idle=%u", (int)vbt_velocity_mms(), (unsigned)vbt_moving(), (unsigned)s_dup_count, (unsigned)g_diag.idle_state);
                 diag_print();                    /* C1: liczniki dropow + okresy + timingi */
             }
 #endif

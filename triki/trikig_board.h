@@ -9,7 +9,7 @@
 
 #define PIN_LED            28u
 #define PIN_BTN            25u
-#define PIN_IMU_INT1       9u   /* fallback kandydat (probe) */
+#define PIN_IMU_INT1       9u   /* LSM INT1 / SLEEP_CHANGE (od 0.4.0: activity/inactivity -> IDLE) */
 #define PIN_IMU_INT2      10u   /* **LSM INT2/DRDY -> P0.10** [P] potwierdzone plyta 2026-08-30 */
 #define LED_ACTIVE_LOW     1
 #define BTN_ACTIVE_LOW     1

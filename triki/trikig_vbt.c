@@ -53,6 +53,8 @@ static int32_t s_wbias[3];      /* q16.16 rad/s, estymata biasu gyro (nauka w qu
                                  * 0.3.7: dryf z biasu podtrzymywal blad g na progu gate'a
                                  * => raczeta velocity przy ruchach — log wire v2 21:42) */
 static uint16_t s_frames;       /* licznik ramek od resetu (fallback kalibracji) */
+static bool    s_idle;          /* v0.4.0: IDLE-CONNECTED — gyro w power-down (OUT
+                                 * zamrozone BDU) => propagacja i nauka biasu wylaczone */
 
 /* raw i16 (1g=2048) -> q8.8 m/s^2: raw/2048*9.80665*256 = raw*1.22583 => raw*314>>8 (err 0.06%) */
 static inline int32_t acc_q88(int16_t r)
@@ -87,6 +89,16 @@ void vbt_reset(void)
     s_gest_forced = false;
     memset(s_wbias, 0, sizeof(s_wbias));
     s_frames = 0;
+    s_idle = false;
+}
+
+void vbt_idle(bool idle)
+{
+    /* v0.4.0 IDLE-CONNECTED: w IDLE gyro jest w power-down (auto INACT_EN) — OUTx_G
+     * zamrozone przez BDU na ostatniej probce. Wpuszczanie zamrozonego gyro do
+     * propagacji/nauki biasu zatruwaloby g_est/wbias (klasa regresji slowrot 0.3.7).
+     * Acc pracuje normalnie (12.5Hz LP) — rest/ZUPT/vel zyja dalej. */
+    s_idle = idle;
 }
 
 void vbt_set_axis(const int16_t axis_q12[3])
@@ -146,7 +158,9 @@ void vbt_on_frame(const uint8_t *raw12, uint16_t dt_q16)
 
     /* 1. propagacja gyro: dg = -(w x g)*dt. w q16.16 [rad/s], g q8.8 => iloczyn q24 (int64,
      *    przepelnia int32 przy FS 2000dps); *dt q16.16 >> 32 => q8.8, z zaokragleniem
-     *    (+2^31): truncation bil ~4% katowe na ramke => kumulatywny lag (C6). */
+     *    (+2^31): truncation bil ~4% katowe na ramke => kumulatywny lag (C6).
+     *    v0.4.0: w IDLE gyro zamrozone (power-down) => propagacja i korekcja z gate'a
+     *    gyro wylaczone; acc-korekcja (leak + innowacja < G_CORR_MAX) zostaje. */
     int32_t wq[3] = { (int32_t)g_raw[0] * TRIKIG_VBT_GYR_Q16_RAD_LSB,
                       (int32_t)g_raw[1] * TRIKIG_VBT_GYR_Q16_RAD_LSB,
                       (int32_t)g_raw[2] * TRIKIG_VBT_GYR_Q16_RAD_LSB };
@@ -154,23 +168,28 @@ void vbt_on_frame(const uint8_t *raw12, uint16_t dt_q16)
     int32_t we[3] = { wq[0] - s_wbias[0], wq[1] - s_wbias[1], wq[2] - s_wbias[2] };
     VBT_PROF(grav_us_max,
     {
-        int64_t cx = (int64_t)we[1]*s_gest[2] - (int64_t)we[2]*s_gest[1];
-        int64_t cy = (int64_t)we[2]*s_gest[0] - (int64_t)we[0]*s_gest[2];
-        int64_t cz = (int64_t)we[0]*s_gest[1] - (int64_t)we[1]*s_gest[0];
-        s_gest[0] -= (int32_t)((cx * (int64_t)dt_q16 + ((int64_t)1 << 31)) >> 32);
-        s_gest[1] -= (int32_t)((cy * (int64_t)dt_q16 + ((int64_t)1 << 31)) >> 32);
-        s_gest[2] -= (int32_t)((cz * (int64_t)dt_q16 + ((int64_t)1 << 31)) >> 32);
+        if (!s_idle) {
+            int64_t cx = (int64_t)we[1]*s_gest[2] - (int64_t)we[2]*s_gest[1];
+            int64_t cy = (int64_t)we[2]*s_gest[0] - (int64_t)we[0]*s_gest[2];
+            int64_t cz = (int64_t)we[0]*s_gest[1] - (int64_t)we[1]*s_gest[0];
+            s_gest[0] -= (int32_t)((cx * (int64_t)dt_q16 + ((int64_t)1 << 31)) >> 32);
+            s_gest[1] -= (int32_t)((cy * (int64_t)dt_q16 + ((int64_t)1 << 31)) >> 32);
+            s_gest[2] -= (int32_t)((cz * (int64_t)dt_q16 + ((int64_t)1 << 31)) >> 32);
+        }
 
         /* 2. korekcja ACC: gate |w| < 15 dps (szybka rotacja => ufa gyro; BIAS zyroskopu
          *    do 15 dps MUSI przepuszczac — 2 dps powodowalo rampę, patrz trikig_vbt.h)
          *    I innowacja ||acc-g|| < 1.0 m/s^2. Cel = RAW acc (brak lagu w petli). Dodatkowo
          *    powolny leak 1/2048 ZAWSZE (net przeciw permanentnemu dead-lockowi przy duzym
-         *    bledzie g — innowacja > 1.0 blokuje szybka sciezke, leak wyciaga stan). */
+         *    bledzie g — innowacja > 1.0 blokuje szybka sciezke, leak wyciaga stan).
+         *    v0.4.0: w IDLE gate gyro przechodzi (zamrozone w~0), ale nauka biasu
+         *    wylaczona — patrz nizzej (sekcja lin). */
         int32_t dg[3] = { av[0] - s_gest[0], av[1] - s_gest[1], av[2] - s_gest[2] };
         int64_t pg = (int64_t)dg[0]*dg[0] + (int64_t)dg[1]*dg[1] + (int64_t)dg[2]*dg[2];
-        if (abs(we[0]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
-            abs(we[1]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
-            abs(we[2]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
+        if ((!s_idle ||
+             (abs(we[0]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
+              abs(we[1]) < TRIKIG_VBT_GYR_REST_TH_Q16 &&
+              abs(we[2]) < TRIKIG_VBT_GYR_REST_TH_Q16)) &&
             pg < (int64_t)TRIKIG_VBT_G_CORR_MAX * TRIKIG_VBT_G_CORR_MAX) {
             for (int i = 0; i < 3; i++)
                 s_gest[i] += dg[i] >> TRIKIG_VBT_G_CORR_SHIFT;
@@ -205,9 +224,11 @@ void vbt_on_frame(const uint8_t *raw12, uint16_t dt_q16)
         s_rest = (s_rest_cnt >= TRIKIG_VBT_REST_FRAMES);
 
         /* 0.3.7: nauka biasu gyro w bezruchu. 0.3.9: TYLKO przy pelnym rest I rezydualnej
-         * rotacji < 5 dps — przy quasi-rest nauka pochlaniala wolne rotacje (wbias zatruty
-         * => propagacja nadrabiala w zla strone => rampa; log 22:22, repro slowrot). */
-        if (s_rest && pl < (int64_t)TRIKIG_VBT_REST_TH * TRIKIG_VBT_REST_TH &&
+         *    rotacji < 5 dps — przy quasi-rest nauka pochlaniala wolne rotacje (wbias zatruty
+         *    => propagacja nadrabiala w zla strone => rampa; log 22:22, repro slowrot).
+         *    v0.4.0: w IDLE gyro zamrozone (power-down/BDU) — nauka wylaczona, inaczej
+         *    wbias ciagneloby do zamrozonej (stalej) wartosci przez dlugi czas bezruchu. */
+        if (!s_idle && s_rest && pl < (int64_t)TRIKIG_VBT_REST_TH * TRIKIG_VBT_REST_TH &&
             abs(we[0]) < TRIKIG_VBT_WBIAS_LEARN_DPS * 1144 &&
             abs(we[1]) < TRIKIG_VBT_WBIAS_LEARN_DPS * 1144 &&
             abs(we[2]) < TRIKIG_VBT_WBIAS_LEARN_DPS * 1144) {

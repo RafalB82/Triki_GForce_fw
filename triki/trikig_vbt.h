@@ -79,6 +79,8 @@ _Static_assert(TRIKIG_VBT_V_CLAMP <= 0x7FFF,
 #define TRIKIG_VBT_AXIS_Q12        4096u   /* wektor osi ruchu: q12, |axis| = 4096 */
 
 void    vbt_reset(void);                    /* zero stanu; wywolac po imu init */
+void    vbt_idle(bool idle);                /* v0.4.0 IDLE-CONNECTED: true = gyro w power-down
+                                              * (zamrozone OUT) => bez propagacji/nauki biasu */
 void    vbt_on_frame(const uint8_t *raw12, uint16_t dt_q16); /* feed: 12B z OUT 0x22
                                               * (gyro6+acc6 i16LE) + dt [q16.16] */
 void    vbt_set_axis(const int16_t axis_q12[3]);  /* os ruchu (normalizowana do 4096) */

@@ -135,6 +135,49 @@ bool lsm6dsl_drdy1_enable(bool on)
     return true;
 }
 
+bool lsm6dsl_inactivity_enable(bool on)
+{
+    /* v0.4.0 IDLE-CONNECTED (plan pkt 1): HW activity/inactivity — INACT_EN=11
+     * => po SLEEP_DUR bezruchu HW SAM przechodzi w low-power (acc 12.5Hz LP,
+     * gyro power-down), activity => auto-restore. FW nie przelacza CTRL1/CTRL2
+     * recznie (miedzy innymi dlatego, ze reczne 0x10/0x40 z pierwotnej propozycji
+     * gubilo FS=16g => 8x zmiana czulosci vs kontrakt wire 2048 LSB/g).
+     * LIR=1: poziom trzymamy do odczytu WAKE_UP_SRC (sync w lsm6dsl_inact_state). */
+    uint8_t tap_cfg = on ? LSM_TAP_CFG_INACT : 0x00u;
+    uint8_t wk_ths  = on ? LSM_WK_THS : 0x00u;
+    uint8_t wk_dur  = on ? (uint8_t)LSM_SLEEP_DUR_S : 0x00u;
+    uint8_t md1     = on ? LSM_MD1_SLEEP_CHG : 0x00u;
+
+    bool ok = reg_write(LSM_TAP_CFG, tap_cfg);
+    ok = reg_write(LSM_WAKE_UP_THS, wk_ths) && ok;
+    ok = reg_write(LSM_WAKE_UP_DUR, wk_dur) && ok;
+    ok = reg_write(LSM_MD1_CFG, md1) && ok;
+
+    uint8_t r_tap = 0, r_ths = 0, r_dur = 0, r_md1 = 0;
+    ok = reg_read(LSM_TAP_CFG, &r_tap, 1) && ok;
+    ok = reg_read(LSM_WAKE_UP_THS, &r_ths, 1) && ok;
+    ok = reg_read(LSM_WAKE_UP_DUR, &r_dur, 1) && ok;
+    ok = reg_read(LSM_MD1_CFG, &r_md1, 1) && ok;
+    rtt_diag_printf("S2 inact cfg=%02x ths=%02x dur=%02x md1=%02x", r_tap, r_ths, r_dur, r_md1);
+    if (!ok || r_tap != tap_cfg || r_ths != wk_ths || r_dur != wk_dur || r_md1 != md1) {
+        rtt_diag_printf("S2 inact MISMATCH ok=%d tap=%02x ths=%02x dur=%02x md1=%02x",
+                        ok, r_tap, r_ths, r_dur, r_md1);
+        return false;
+    }
+    return true;
+}
+
+bool lsm6dsl_inact_state(bool *sleeping)
+{
+    /* Readback stanu z HW (D-017): SLEEP_STATE_IA=1 => uklad w inactivity (low-power).
+     * Odczyt WAKE_UP_SRC kasuje LIR => kolejna zmiana stanu wygeneruje nowy poziom
+     * na INT1 (GPIOTE TOGGLE/LOTOHI zlapie krawedz). */
+    uint8_t src = 0;
+    if (!reg_read(LSM_WAKE_UP_SRC, &src, 1)) return false;
+    *sleeping = ((src & 0x10u) != 0u);
+    return true;
+}
+
 bool lsm6dsl_read_motion(uint8_t *dst12)
 {
     if (lsm6dsl_twim_init()) {

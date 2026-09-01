@@ -37,6 +37,9 @@ typedef struct {
     uint16_t lin_us_max;     /* LPF roznicy + detektor rest + projekcja */
     uint16_t vel_us_max;     /* integracja + ZUPT + clamp */
     uint8_t  drdy_mode;      /* 0 = polling; 1/2 = P0.09 rising/falling; 3/4 = P0.10 r/f */
+    uint8_t  idle_state;     /* v0.4.0: 1 = IDLE-CONNECTED (acc 12.5Hz LP, gyro PD) */
+    uint16_t idle_trans;     /* v0.4.0: liczba przejsc idle<->active */
+    uint16_t idle_cp_fail;   /* v0.4.0: odrzucone/znokautowane conn param update (IDLE) */
 } trikig_diag_t;
 
 extern trikig_diag_t g_diag;
