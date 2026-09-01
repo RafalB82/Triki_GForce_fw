@@ -41,6 +41,13 @@
  * v0.3.5: DRDY na INT2 (pin 9 ukladu wg datasheet ukladu — INT1 ukladu niepolaczony,
  * dlatego probe 0.3.3/0.3.4 nie widzial krawedzi); register INT2_CTRL (0x0E); probe
  * rozszerzona: pin P0.09/P0.10 x polaryzacja (drdy_mode 1-4).
+ * v0.4.3 (smoke v0.4.2 [P], log RTT+nRF Connect 16:31): cpfail=0 przez 3 przejscia
+ * (fix gated apply dziala), dtf=1 nierosnace (fix RTC1 dziala), conn params
+ * 150ms/lat4 OD CONNECT (sync) i w rytmie S6. NOWY FINDING: klasa ruchu 30-250mg
+ * (prog rest VBT 0.3 m/s^2 ~ 30mg << WK_THS 250mg) integrowala velocity @12.5Hz
+ * z zamrozonym gyro => phantom az do clampa 15625 mm/s (obrot kapsla = g_est
+ * nie sledzi). Fix: velocity w IDLE = 0 BY DESIGN (trikig_vbt: s_idle => s_vel=0);
+ * realny trening >250mg wybudza HW => 104Hz => pelne VBT od zera.
  * v0.4.2 (smoke v0.4.1 [P], log RTT 2026-09-01): (1) dtf +1/probke w IDLE — RTC1
  * przy app_timer2 ma PRESCALER=1 => 16384Hz (61.035us/tick), nie 32768Hz; progi
  * IDLE przeliczone (min 655/max 1966/wdt 2621/gap 3277), dt q16.16 = ticks*4

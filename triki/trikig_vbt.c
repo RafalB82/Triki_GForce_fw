@@ -240,21 +240,30 @@ void vbt_on_frame(const uint8_t *raw12, uint16_t dt_q16)
     /* 6. projekcja na os ruchu -> integracja 1D */
     VBT_PROF(vel_us_max,
     {
-        int32_t a_move = (s_lin[0] * s_axis[0] +
-                          s_lin[1] * s_axis[1] +
-                          s_lin[2] * s_axis[2]) >> 12;
-
-        if (s_rest) {
-            /* ZUPT: min krok 1 q8.8 — bez tego s_vel>>5 == 0 przy |v| < 125 mm/s i decay
-             * STOI (bug dziedziczony z v0.0.24, zlapano w C6). */
-            int32_t d = s_vel_q88 >> TRIKIG_VBT_BETA_LPF;
-            if (d == 0 && s_vel_q88 != 0) d = (s_vel_q88 > 0) ? 1 : -1;
-            s_vel_q88 -= d;
+        if (s_idle) {
+            /* v0.4.3 [P] (log smoke 0.4.2): w IDLE gyro zamrozone => g_est nie sledzi
+             * rotacji => lin pod obrotem jest falszywy; klasa ruchu 30-250mg (ponizej
+             * WK_THS) integrowala phantom velocity @12.5Hz az do clampa 15625 mm/s.
+             * Velocity w IDLE = 0 BY DESIGN (bez gyro nie ma sensownej integracji);
+             * realny trening (>250mg) wybudza HW => 104Hz => pelne VBT od zera. */
+            s_vel_q88 = 0;
         } else {
-            s_vel_q88 += (a_move * (int32_t)dt_q16) >> 16;   /* v += a*dt (dt q16.16) */
+            int32_t a_move = (s_lin[0] * s_axis[0] +
+                              s_lin[1] * s_axis[1] +
+                              s_lin[2] * s_axis[2]) >> 12;
+
+            if (s_rest) {
+                /* ZUPT: min krok 1 q8.8 — bez tego s_vel>>5 == 0 przy |v| < 125 mm/s i decay
+                 * STOI (bug dziedziczony z v0.0.24, zlapano w C6). */
+                int32_t d = s_vel_q88 >> TRIKIG_VBT_BETA_LPF;
+                if (d == 0 && s_vel_q88 != 0) d = (s_vel_q88 > 0) ? 1 : -1;
+                s_vel_q88 -= d;
+            } else {
+                s_vel_q88 += (a_move * (int32_t)dt_q16) >> 16;   /* v += a*dt (dt q16.16) */
+            }
+            if (s_vel_q88 >  TRIKIG_VBT_V_CLAMP) s_vel_q88 =  TRIKIG_VBT_V_CLAMP;
+            if (s_vel_q88 < -TRIKIG_VBT_V_CLAMP) s_vel_q88 = -TRIKIG_VBT_V_CLAMP;
         }
-        if (s_vel_q88 >  TRIKIG_VBT_V_CLAMP) s_vel_q88 =  TRIKIG_VBT_V_CLAMP;
-        if (s_vel_q88 < -TRIKIG_VBT_V_CLAMP) s_vel_q88 = -TRIKIG_VBT_V_CLAMP;
     });
 }
 
