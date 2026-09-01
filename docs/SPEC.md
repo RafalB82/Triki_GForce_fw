@@ -194,7 +194,7 @@ Stan maszyny: **ACTIVE** (jak dotychczas) <-> **IDLE-CONNECTED** (HW inactivity)
 | INT1/P0.09 | nasluch SLEEP_CHANGE (TOGGLE) | j.w. |
 | BLE stream | 19B @104/s | **19B @12.5/s** (seq ciagly, tylko wolniejszy) |
 | Conn params | ppcp 7.5-15ms, lat 0 | **150ms, latency 4** (best-effort) |
-| VBT | pelny | integracja/idle: acc-only; **propagacja gyro + nauka biasu OFF** (zamrozony OUT) |
+| VBT | pelny | **velocity = 0 by design** (gyro zamrozone — integracja bez gyro = phantom pod rotacja, 0.4.3); rest/flags liczone acc-only; propagacja gyro + nauka biasu OFF |
 | Wejscie | activity (INT1 + readback WAKE_UP_SRC) | **4s bezruchu** (SLEEP_DUR, WK_THS=250mg) |
 | Wyjscie | 4s bezruchu => inactivity | **ruch > prog => activity** (HW auto-restore ODR) |
 
@@ -302,7 +302,14 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
     0.3.4 to de facto 120ms (nie 60ms — komentarz bledny, ACTIVE nieczuly na roznice).
     (h) 0.4.2 [P]: cpfail +1/przejscie — readback WAKE_UP_SRC kasuje LIR => TOGGLE
     lapie deassert => drugi event z tym samym stanem => ponowna negocjacja cp = BUSY;
-    idle_cp_apply gated na zmiane stanu (0.4.2).
+    idle_cp_apply gated na zmiane stanu (0.4.2) — POTWIERDZONY [P] (0.4.2 smoke:
+    cpfail=0 przez 3 przejscia).
+    (i) 0.4.3 [P]: klasa ruchu 30-250mg (prog rest VBT 0.3 m/s^2 ~ 30mg << WK_THS
+    250mg @FS16g — podloga progu HW) integrowala velocity @12.5Hz z zamrozonym gyro
+    (g_est nie sledzi rotacji) => phantom az do clampa 15625 mm/s (log smoke 0.4.2:
+    v=12593->15625). FIX: velocity w IDLE = 0 BY DESIGN; realny trening >250mg
+    wybudza HW => 104Hz => pelne VBT od zera. Conn params [P]: 150ms/lat4 OD
+    CONNECT (sync przy connect) i w rytmie S6 (log 16:31).
 8. m_stream_on zawsze true po starcie (init-komenda tylko potwierdza).
 9. v21/v22 bez logow PWA i testow terenowych (produkcja pozostaje v19; v21 boot zielony).
 
