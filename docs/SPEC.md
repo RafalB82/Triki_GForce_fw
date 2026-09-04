@@ -93,8 +93,8 @@ Wartosci WYLACZNIE z tabeli datasheet (D-017); readback w RTT przy boocie.
 | CTRL3_C (0x12) | 0x0C | BDU(bit3) + IF_INC(bit2). 0.1.0 i wcześniejsze: 0x44 = H_LACTIVE+IF_INC — **BDU nie ustawiony** (audyt 2026-08-30, readback c3 od 0.1.1) |
 | FIFO_CTRL5 (0x0A) | 0x00 | FIFO bypass (strategia poll; FIFO nie dziala na tym egzemplarzu bez LA — D-016) |
 | TAP_CFG (0x58) | 0xE1 (od 0.4.0) | INTERRUPTS_ENABLE(bit7) + **INACT_EN=11** (bity[6:5]: activity/inactivity) + LIR(bit0) — zrodlo IDLE-CONNECTED (sekcja 6) |
-| WAKE_UP_THS (0x5B) | 0x01 (od 0.4.0) | WK_THS=1 — prog budzenia; 1 LSB = FS_XL/2^6 = **250mg @ FS 16g** [?] do potwierdzenia postrojeniem na HW (start: najnizszy niezerowy) |
-| WAKE_UP_DUR (0x5C) | 0x04 (od 0.4.0) | SLEEP_DUR=4 — **4s bezruchu => inactivity** (pole 4-bit, max 15s) |
+| WAKE_UP_THS (0x5B) | 0x01 (od 0.4.0) | WK_THS=1 — prog budzenia; 1 LSB = FS_XL/2^6 = **250mg @ FS 16g**. [P] 2026-09-03: klasa ruchu dip/pullup 140-246mg p95 siedzi POD progiem — WK_THS to podloga przy FS16g, nie stroimy (fix = training mode, sekcja 6.2) |
+| WAKE_UP_DUR (0x5C) | 0x06 (od 0.5.0; 0x04 w 0.4.0-0.4.3) | SLEEP_DUR=6 — **6s bezruchu => inactivity** (pole 4-bit, max 15s; 4s za krotkie na starty serii bez komendy [P] 2026-09-03) |
 | MD1_CFG (0x5E) | 0x80 (od 0.4.0) | bit7 **INT1_SLEEP_CHANGE** — zmiana stanu activity/inactivity na INT1 (P0.09) |
 
 Sensitivity: acc 2048 LSB/g, gyro 16.4 LSB/dps (= skale stocka, 1:1).
@@ -119,6 +119,7 @@ Uwaga 0.4.0: INACT_EN=11 uruchamia sprzetowy activity/inactivity — po SLEEP_DU
 | MTU | 247 (sdk_config), ramka 14B idzie jednym notify |
 | Conn params | 7.5–15ms, latency 0, sup timeout 4s; update request po 5s |
 | Init command (RX) | `20 10 00 D0 07 68 00 03` -> ustawia m_stream_on (kompatybilnosc stocka; stream i tak startuje wlaczony) |
+| Komendy RX | `20 11 0x` wire v1/v2; `20 12` FW info; `20 15 0x` stream on/off; `20 16` sleep-now; `20 17` bateria; **`20 18 0x` training mode (od 0.5.0: 01=ON — IDLE wylaczony na czas serii, 00=OFF; auto-OFF przy disconnect — sekcja 6.2)** |
 
 Konsumenci: **TYLKO Triki_G** (D-019/D-021 — PWA/WebBLE wycofane calkowicie, nie sa wazonym klientem; historyczne logi PWA 2026-08-29 = dowoly testowe).
 
@@ -195,7 +196,7 @@ Stan maszyny: **ACTIVE** (jak dotychczas) <-> **IDLE-CONNECTED** (HW inactivity)
 | BLE stream | 19B @104/s | **19B @12.5/s** (seq ciagly, tylko wolniejszy) |
 | Conn params | ppcp 7.5-15ms, lat 0 | **150ms, latency 4** (best-effort) |
 | VBT | pelny | **velocity = 0 by design** (gyro zamrozone — integracja bez gyro = phantom pod rotacja, 0.4.3); rest/flags liczone acc-only; propagacja gyro + nauka biasu OFF |
-| Wejscie | activity (INT1 + readback WAKE_UP_SRC) | **4s bezruchu** (SLEEP_DUR, WK_THS=250mg) |
+| Wejscie | activity (INT1 + readback WAKE_UP_SRC) | **6s bezruchu** (SLEEP_DUR od 0.5.0, WK_THS=250mg) |
 | Wyjscie | 4s bezruchu => inactivity | **ruch > prog => activity** (HW auto-restore ODR) |
 
 Zasady:
@@ -218,6 +219,32 @@ Zasady:
 - Wake latency [?]: INT1 @12.5Hz (do 80ms) + gyro turn-on (~70-80ms po power-down)
   => ~150ms slabego okna na starcie ruchu; VBT pokrywa gap-ZUPT; wplyw na repy
   do rozstrzygniecia kryterium F3 (>=90% count vs Triki_G).
+
+### 6.2 TRAINING MODE (od 0.5.0) — IDLE wylaczony na czas serii
+
+**Motywacja [P] (trening 2026-09-03, FW 0.4.3, dip 25kg / pullup 20kg):** klasa ruchu
+repów dip/pullup = **140-246 mg p95** (p50 4-17 mg — holdy; max 429-758 mg, clank
+2646 mg), tylko 1.4-4.8% probek aktywnych > WK_THS 250mg => HW NIE wybudza z
+inactivity w dominujacej czesci serii (pickup/rep < 250mg). Efekt: app dostala tylko
+**21-36% ramek** vs duration_sec (kazdy CSV = jeden ciagly burst 104Hz, reszta serii
+bez ramek), SetResult raw=1/valid 0-1, base_mcv ~0.008, 2x hardRejected
+physicallyImplausible (ujemne czasy repa). Offline V2 na tych samych CSV: R_PCA
+0.49-0.97, 1-5 kandydatow. Nagrania NIE nadaja sie do walidacji rep-licznika;
+diagnoza WK_THS potwierdzona.
+
+| Element | Wartosc |
+|---|---|
+| Komenda RX | `20 18 01` = ON, `20 18 00` = OFF (param w 3. bajcie; brak param = ignoruj) |
+| ON | `lsm6dsl_inactivity_enable(false)` (TAP_CFG/WK_THS/WK_DUR/MD1 = 0x00); readback `WAKE_UP_SRC`: sleeping => **`lsm6dsl_wake_force()`** (jawne CTRL1_XL/CTRL2_G = V19 + readback — INACT_EN=00 nie jest w DS6207 opisane jako wybudzenie) => `idle_connected_set(false)`; **`vbt_reset()`** (czysta kalibracja na start serii); conn params wracaja do ppcp (7.5-15ms) |
+| OFF | `lsm6dsl_inactivity_enable(true)` — HW sam zejdzie w IDLE po SLEEP_DUR=6s bezruchu; VBT bez resetu |
+| Auto-OFF | disconnect => zadanie OFF (safety: train ON bez polaczenia = 104Hz bez IDLE = strata pradu) |
+| Kontekst | RX handler (SWI) tylko flaguje `g_train_req`; I2C/readback w main loop (wzorzec `g_conn_sync_req` — I2C zakazane w SWI) |
+| Diag | RTT `S6 train ON (idle off)` / `S6 train OFF` / `S6 train wake c1=.. c2=..`; DIAG `train=` (0/1) |
+
+Semantyka produktowa: host (Triki_G) wysyla `20 18 01` na start serii i `20 18 00`
+po zakonczeniu (docelowo; na teraz recznie nRF Connect). Klienci bez komendy
+(PWA/stock) zachowuja sie jak dotad (IDLE-CONNECTED z SLEEP_DUR=6s).
+
 - Pobor pradu [P] (multimetr, 2026-09-01, FW 0.4.2/0.4.3): **~0.4mA w IDLE**
   (uspienie po bezczynnosci; estymata 0.3-0.5mA potwierdzona) i ~0.4mA przy
   advertising — obie sceny w tym samym rzedzie wielkosci (radio + IMU 12.5Hz LP +
@@ -318,6 +345,14 @@ Z logu PWA v19 23:12 (v21 musi je powtorzyc):
     v=12593->15625). FIX: velocity w IDLE = 0 BY DESIGN; realny trening >250mg
     wybudza HW => 104Hz => pelne VBT od zera. Conn params [P]: 150ms/lat4 OD
     CONNECT (sync przy connect) i w rytmie S6 (log 16:31).
+    (j) 0.5.0 [P] FALSYFIKACJA (i): realny trening dip/pullup (2026-09-03) ma
+    klasę 140-246mg p95 POD WK_THS 250mg (piki 429-758mg tylko 1.4-4.8% probek) =>
+    HW NIE wybudza w serii (21-36% pokrycia ramek; reszta serii bez ramek —
+    lacznie z IDLE 12.5Hz brak czegokolwiek, do weryfikacji strona app);
+    WK_THS=1 to podloga LSB przy FS16g => strojenie progu odpada, fix = training
+    mode `20 18` (sekcja 6.2) + SLEEP_DUR 4s->6s. CROSS-PROJECT (Triki): SetResult
+    hardRejected physicallyImplausible z UJEMNYM czasem repa (medDur -28.7/-39.3s)
+    przy braku danych = odpornosc pipeline'u, osobny watek.
 8. m_stream_on zawsze true po starcie (init-komenda tylko potwierdza).
 9. v21/v22 bez logow PWA i testow terenowych (produkcja pozostaje v19; v21 boot zielony).
 

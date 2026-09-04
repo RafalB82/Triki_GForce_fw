@@ -41,6 +41,15 @@
  * v0.3.5: DRDY na INT2 (pin 9 ukladu wg datasheet ukladu — INT1 ukladu niepolaczony,
  * dlatego probe 0.3.3/0.3.4 nie widzial krawedzi); register INT2_CTRL (0x0E); probe
  * rozszerzona: pin P0.09/P0.10 x polaryzacja (drdy_mode 1-4).
+ * v0.5.0 (MINOR — nowa komenda RX, D-020; baseline diagnostyczny [P] 2026-09-03):
+ * (1) RX 0x20 0x18 = training mode (01=ON/00=OFF, auto-OFF przy disconnect):
+ *     ON wylacza HW activity/inactivity (lsm6dsl_inactivity_enable(false)) —
+ *     klasa ruchu dip/pullup 140-246mg p95 siedzi pod WK_THS 250mg @FS16g (podloga
+ *     LSB), wiec HW usypial w serii (CSV 21-36% pokrycia ramek vs duration, reszta
+ *     serii bez ramek w ogole). ON + sleeping => lsm6dsl_wake_force() (jawne CTRL1/2
+ *     V19 z readbackiem — INACT_EN=00 nie jest w DS6207 opisane jako wybudzenie),
+ *     idle_connected_set(false) + vbt_reset() (czysta kalibracja). (2) SLEEP_DUR
+ *     4s -> 6s (margines na starty serii bez komendy). WK_THS bez zmian (podloga).
  * v0.4.3 (smoke v0.4.2 [P], log RTT+nRF Connect 16:31): cpfail=0 przez 3 przejscia
  * (fix gated apply dziala), dtf=1 nierosnace (fix RTC1 dziala), conn params
  * 150ms/lat4 OD CONNECT (sync) i w rytmie S6. NOWY FINDING: klasa ruchu 30-250mg
@@ -309,6 +318,8 @@ static void drdy_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action)
  * g_idle_connected MIRRORUJE stan HW (przejscia lapane takze bez polaczenia —
  * GPIOTE zyje bez BLE), conn params aplikujemy osobno przy connect. */
 static volatile bool g_activity_event = false;   /* INT1 edge -> main */
+static volatile int8_t g_train_req = -1;         /* v0.5.0 training mode: RX 0x18 -> main
+                                                  * (I2C nie w SWI): -1 brak, 0=OFF, 1=ON */
 static volatile bool g_conn_sync_req = false;    /* v0.4.1: CONNECTED -> sync IDLE w main
                                                   * (I2C readback NIE w kontekscie SWI —
                                                   * ten sam wzorzec co g_info_req) */
@@ -630,6 +641,9 @@ static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context)
              * kapsel lezy, oszczednosc jest wlasciwa takze bez polaczenia; sleep
              * 300s liczony jak dotad). Conn params bez restore — brak polaczenia. */
             idle_connected_set(false);
+            /* v0.5.0: safety — rozlaczenie konczy serie; bez tego train ON zostalby
+             * na zawsze (HW 104Hz bez IDLE = strata pradu). Zadanie do main (I2C). */
+            g_train_req = 0;
             break;
         case BLE_GAP_EVT_PHY_UPDATE_REQUEST: {
             ble_gap_phys_t const phys = {BLE_GAP_PHY_AUTO, BLE_GAP_PHY_AUTO};
@@ -678,6 +692,9 @@ static void nus_evt_handler(ble_nus_evt_t *p_evt)
             break;
         case 0x17:                       /* battery request -> ramka 22 04 */
             g_batt_req++;
+            break;
+        case 0x18:                       /* v0.5.0 training mode: 01=ON (IDLE off), 00=OFF */
+            if (len >= 3) g_train_req = (d[2] == 0x01) ? 1 : 0;
             break;
         case 0x15:                       /* stream on/off */
             if (len >= 3) m_stream_on = (d[2] == 0x01);
@@ -908,6 +925,29 @@ int main(void)
             if (lsm6dsl_inact_state(&sleeping)) {
                 if (sleeping == g_idle_connected) idle_cp_apply();
                 else                             idle_connected_set(sleeping);
+            }
+        }
+
+        /* v0.5.0 training mode: RX 0x20 0x18 (01=ON, 00=OFF). ON = IDLE wylaczony
+         * na czas serii — klasa ruchu dip/pullup 140-246mg p95 < WK_THS 250mg [P]
+         * (trening 2026-09-03: 21-36% pokrycia ramek, HW spi w dominujacej czesci
+         * serii; Wy Hevy: "usypianie za szybko wpływa na kalibrację po starcie
+         * serii"). Auto-OFF przy disconnect (safety). */
+        if (g_train_req >= 0) {
+            bool on = (g_train_req != 0);
+            g_train_req = -1;
+            rtt_diag_printf("S6 train %s", on ? "ON (idle off)" : "OFF");
+            g_diag.train_mode = on ? 1u : 0u;
+            if (lsm6dsl_inactivity_enable(!on) && on) {
+                bool sleeping = false;
+                if (lsm6dsl_inact_state(&sleeping)) {
+                    if (sleeping && lsm6dsl_wake_force()) {
+                        idle_connected_set(false);   /* HW wyszedl z low-power */
+                    } else if (!sleeping && g_idle_connected) {
+                        idle_connected_set(false);   /* HW juz zywy, FW nie skoczyl */
+                    }
+                }
+                vbt_reset();                         /* czysta kalibracja na start serii */
             }
         }
 

@@ -49,8 +49,9 @@ void diag_print(void)
                       (unsigned)g_diag.grav_us_max, (unsigned)g_diag.lin_us_max,
                       (unsigned)g_diag.vel_us_max, (unsigned)g_diag.ble_us_max);
     SEGGER_RTT_WriteString(0, "\r\n");
-    SEGGER_RTT_printf(0, "DIAG idle=%u trans=%u cpfail=%u",
-                      (unsigned)g_diag.idle_state, (unsigned)g_diag.idle_trans,
+    SEGGER_RTT_printf(0, "DIAG idle=%u train=%u trans=%u cpfail=%u",
+                      (unsigned)g_diag.idle_state, (unsigned)g_diag.train_mode,
+                      (unsigned)g_diag.idle_trans,
                       (unsigned)g_diag.idle_cp_fail);
     SEGGER_RTT_WriteString(0, "\r\n");
 }

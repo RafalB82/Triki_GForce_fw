@@ -228,6 +228,23 @@ bool lsm6dsl_inact_state(bool *sleeping)
     return true;
 }
 
+bool lsm6dsl_wake_force(void)
+{
+    /* v0.5.0 training mode: jawne wyjscie z inactivity. DS6207 6.5.2 opisuje
+     * auto-restore przy activity evencie, NIE przy INACT_EN=00 — po wylaczeniu
+     * funkcji HW moze pozostac w low-power (acc 12.5Hz LP + gyro power-down).
+     * Wymuszamy exit przepisaniem kanonicznych CTRL1_XL/CTRL2_G (V19) z
+     * readbackiem (D-017): zmiana ODR = gwarantowany exit z inactivity.
+     * Bez tego gyro moglby zostac w power-down mimo zywego acc (klasa slowrot). */
+    uint8_t c1 = 0, c2 = 0;
+    bool ok = reg_write_t(LSM_CTRL1_XL, LSM_CTRL1_XL_V19);
+    ok = reg_write_t(LSM_CTRL2_G, LSM_CTRL2_G_V19) && ok;
+    ok = reg_read_t(LSM_CTRL1_XL, &c1, 1) && ok;
+    ok = reg_read_t(LSM_CTRL2_G, &c2, 1) && ok;
+    rtt_diag_printf("S6 train wake c1=%02x c2=%02x", c1, c2);
+    return ok && c1 == LSM_CTRL1_XL_V19 && c2 == LSM_CTRL2_G_V19;
+}
+
 bool lsm6dsl_read_motion(uint8_t *dst12)
 {
     if (lsm6dsl_twim_init()) {

@@ -43,7 +43,9 @@
 
 #define LSM_TAP_CFG_INACT 0xE1u  /* INTERRUPTS_ENABLE | INACT_EN=11 | LIR */
 #define LSM_WK_THS        1u    /* 250 mg @ FS 16g — start, strojenie na HW */
-#define LSM_SLEEP_DUR_S   4u    /* 4s bezruchu => inactivity (propozycja 3-5s) */
+#define LSM_SLEEP_DUR_S   6u    /* 6s bezruchu => inactivity (v0.5.0: 4s za krotkie —
+                                  * start serii/wolne fazy rep ~140-246mg p95 < WK_THS
+                                  * 250mg usypialy HW w serii [P] 2026-09-03; margines) */
 #define LSM_MD1_SLEEP_CHG 0x80u /* bit7 INT1_SLEEP_CHANGE */
 
 /* --- wartosci CTRL1_XL / CTRL2_G (datasheet, NIE z pamieci!) ---
@@ -68,5 +70,6 @@ bool    lsm6dsl_drdy_enable(bool on);          /* INT2_CTRL = DRDY_XL, z readbac
 bool    lsm6dsl_drdy1_enable(bool on);         /* INT1_CTRL = DRDY_XL, z readbackiem (scan) */
 bool    lsm6dsl_inactivity_enable(bool on);    /* v0.4.0: TAP_CFG INACT_EN + progi + MD1_CFG, z readbackiem */
 bool    lsm6dsl_inact_state(bool *sleeping);    /* v0.4.0: WAKE_UP_SRC.SLEEP_STATE_IA (sync FW<->HW) */
+bool    lsm6dsl_wake_force(void);              /* v0.5.0: jawne wyjscie z inactivity (CTRL1/CTRL2 V19 + readback) */
 
 #endif /* TRIKIG_LSM6DSL_H */
